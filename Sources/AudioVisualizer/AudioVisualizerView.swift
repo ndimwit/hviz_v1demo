@@ -88,23 +88,46 @@ public struct AudioVisualizerView: View {
                             .padding(.top, isRegularWidth ? 20 : 10)
                     }
                     
-                    // Preset selector dropdown
+                    // Controls row: Preset selector and Frame rate
                     HStack {
-                        Text("Preset:")
-                            .font(isRegularWidth ? .body : .caption)
-                            .foregroundColor(.secondary)
+                        // Preset selector
+                        HStack {
+                            Text("Preset:")
+                                .font(isRegularWidth ? .body : .caption)
+                                .foregroundColor(.secondary)
+                            
+                            Picker("Visualizer Preset", selection: Binding(
+                                get: { viewStore.selectedPreset },
+                                set: { viewStore.send(.presetSelected($0)) }
+                            )) {
+                                ForEach(VisualizerPresetType.allCases) { preset in
+                                    Text(preset.displayName)
+                                        .tag(preset)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: isRegularWidth ? 200 : 150)
+                        }
                         
-                        Picker("Visualizer Preset", selection: Binding(
-                            get: { viewStore.selectedPreset },
-                            set: { viewStore.send(.presetSelected($0)) }
-                        )) {
-                            ForEach(VisualizerPresetType.allCases) { preset in
-                                Text(preset.displayName)
-                                    .tag(preset)
+                        Spacer()
+                        
+                        // Frame rate display
+                        if viewStore.isMonitoring && viewStore.frameRate > 0 {
+                            HStack(spacing: 4) {
+                                Text("FPS:")
+                                    .font(isRegularWidth ? .body : .caption)
+                                    .foregroundColor(.secondary)
+                                Text(String(format: "%.1f", viewStore.frameRate))
+                                    .font(isRegularWidth ? .body.monospacedDigit() : .caption.monospacedDigit())
+                                    .foregroundColor(.primary)
+                                    .padding(.horizontal, isRegularWidth ? 8 : 6)
+                                    .padding(.vertical, isRegularWidth ? 4 : 2)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(Color.secondary.opacity(0.1))
+                                    )
                             }
                         }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: isRegularWidth ? 200 : 150)
                     }
                     .padding(.horizontal, horizontalPadding)
                     .padding(.top, isRegularWidth ? 10 : 5)
