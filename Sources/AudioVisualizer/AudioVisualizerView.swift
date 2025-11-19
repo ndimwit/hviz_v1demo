@@ -201,6 +201,7 @@ public struct AudioVisualizerView: View {
                     AnyView(
                         preset.makeView(
                             magnitudes: viewStore.displayMagnitudes.isEmpty ? viewStore.fftMagnitudes : viewStore.displayMagnitudes,
+                            rawAudioSamples: viewStore.rawAudioSamples,
                             maxMagnitude: viewStore.maxMagnitude,
                             isRegularWidth: isRegularWidth,
                             chartHeight: chartHeight(for: geometry),

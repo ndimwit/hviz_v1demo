@@ -13,6 +13,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// Smoothed/interpolated FFT magnitudes for display
         public var displayMagnitudes: [Float] = []
         
+        /// Raw audio samples for time-domain visualization (oscilloscope)
+        public var rawAudioSamples: [Float] = []
+        
         /// Previous FFT magnitudes for interpolation (the starting point for interpolation)
         private var previousFFTMagnitudes: [Float] = []
         
@@ -113,6 +116,7 @@ public struct AudioVisualizerFeature: Reducer {
         public static func == (lhs: State, rhs: State) -> Bool {
             lhs.fftMagnitudes == rhs.fftMagnitudes &&
             lhs.displayMagnitudes == rhs.displayMagnitudes &&
+            lhs.rawAudioSamples == rhs.rawAudioSamples &&
             lhs.isMonitoring == rhs.isMonitoring &&
             lhs.errorMessage == rhs.errorMessage &&
             lhs.selectedPreset == rhs.selectedPreset &&
@@ -253,6 +257,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// Periodic update for interpolation (called even when no new FFT data)
         case interpolationTick
         
+        /// Raw audio samples were updated
+        case rawSamplesUpdated([Float])
+        
         /// An error occurred
         case errorOccurred(String)
         
@@ -326,6 +333,7 @@ public struct AudioVisualizerFeature: Reducer {
                 state.isMonitoring = false
                 state.fftMagnitudes = []
                 state.displayMagnitudes = []
+                state.rawAudioSamples = []
                 // previousFFTMagnitudes will be reset automatically when updateDisplayMagnitudes is called with empty data
                 state.frameRate = 0.0
                 state.fpsHistory.removeAll()
@@ -344,6 +352,10 @@ public struct AudioVisualizerFeature: Reducer {
                 // Continuously update interpolation even when no new FFT data arrives
                 state.updateDisplayMagnitudes()
                 state.updateFrameRate()
+                return .none
+                
+            case let .rawSamplesUpdated(samples):
+                state.rawAudioSamples = samples
                 return .none
                 
             case let .errorOccurred(message):
@@ -437,10 +449,12 @@ public struct AudioVisualizerFeature: Reducer {
             }
         }
         
-        // Main loop: check for new FFT data
+        // Main loop: check for new FFT data and raw samples
         while await audioMonitor.isMonitoring {
             let magnitudes = await audioMonitor.fftMagnitudes
+            let rawSamples = await audioMonitor.rawAudioSamples
             await send(.magnitudesUpdated(magnitudes))
+            await send(.rawSamplesUpdated(rawSamples))
             
             // Check for updates at ~60 FPS
             try? await Task.sleep(nanoseconds: 16_666_666) // ~16.67ms = 60 FPS

@@ -28,6 +28,13 @@ final class AudioUnitMonitor {
     /// Store the FFT magnitude results (thread-safe access via MainActor)
     @MainActor private(set) var fftMagnitudes: [Float] = []
     
+    /// Store recent raw audio samples for time-domain visualization (oscilloscope)
+    /// Keeps a rolling window of the most recent samples
+    @MainActor private(set) var rawAudioSamples: [Float] = []
+    
+    /// Maximum number of raw samples to keep for visualization
+    private let maxRawSamples = 4096
+    
     /// Track if audio monitoring is running
     var isMonitoring = false
     
@@ -201,9 +208,10 @@ final class AudioUnitMonitor {
         sampleBuffer.removeAll()
         bufferLock.unlock()
         
-        // Reset magnitudes on MainActor
+        // Reset magnitudes and samples on MainActor
         await MainActor.run {
             fftMagnitudes = [Float](repeating: 0, count: fftBandQuantity)
+            rawAudioSamples = []
         }
         isMonitoring = false
     }
@@ -687,6 +695,13 @@ final class AudioUnitMonitor {
             Task { @MainActor in
                 let magnitudes = await self.performFFT(data: audioData)
                 self.fftMagnitudes = magnitudes
+                
+                // Store raw audio samples for time-domain visualization
+                // Keep a rolling window of recent samples
+                self.rawAudioSamples.append(contentsOf: audioData)
+                if self.rawAudioSamples.count > self.maxRawSamples {
+                    self.rawAudioSamples.removeFirst(self.rawAudioSamples.count - self.maxRawSamples)
+                }
                 
                 if processCallbackCount <= 10 {
                     let maxMagnitude = magnitudes.max() ?? 0

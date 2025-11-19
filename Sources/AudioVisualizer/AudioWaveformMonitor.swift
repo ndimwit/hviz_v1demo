@@ -31,6 +31,11 @@ final class AudioWaveformMonitor {
         audioUnitMonitor.downsampledMagnitudes
     }
     
+    /// Raw audio samples for time-domain visualization
+    var rawAudioSamples: [Float] {
+        audioUnitMonitor.rawAudioSamples
+    }
+    
     // MARK: - Initialization
     
     private init() {}
