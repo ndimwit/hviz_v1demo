@@ -197,9 +197,10 @@ public struct AudioVisualizerView: View {
                     // Visualizer preset view
                     let preset = viewStore.selectedPreset.preset
                     let availableWidth = geometry.size.width - (horizontalPadding * 2)
+                    // Use displayMagnitudes (interpolated) instead of raw fftMagnitudes for smoother visualization
                     AnyView(
                         preset.makeView(
-                            magnitudes: viewStore.fftMagnitudes,
+                            magnitudes: viewStore.displayMagnitudes.isEmpty ? viewStore.fftMagnitudes : viewStore.displayMagnitudes,
                             maxMagnitude: viewStore.maxMagnitude,
                             isRegularWidth: isRegularWidth,
                             chartHeight: chartHeight(for: geometry),

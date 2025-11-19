@@ -7,8 +7,23 @@ import Foundation
 public struct AudioVisualizerFeature: Reducer {
     
     public struct State: Equatable {
-        /// FFT magnitudes from audio analysis
+        /// FFT magnitudes from audio analysis (raw, from FFT calculation)
         public var fftMagnitudes: [Float] = []
+        
+        /// Smoothed/interpolated FFT magnitudes for display
+        public var displayMagnitudes: [Float] = []
+        
+        /// Previous FFT magnitudes for interpolation (the starting point for interpolation)
+        private var previousFFTMagnitudes: [Float] = []
+        
+        /// Last FFT result we received (for detecting new updates)
+        private var lastReceivedFFT: [Float] = []
+        
+        /// Timestamp of last FFT update
+        private var lastFFTUpdateTime: Date?
+        
+        /// Interpolation progress (0.0 to 1.0) between previous and current magnitudes
+        private var interpolationProgress: Double = 0.0
         
         /// Whether audio monitoring is currently active
         public var isMonitoring = false
@@ -67,13 +82,14 @@ public struct AudioVisualizerFeature: Reducer {
             )
         }
         
-        /// Maximum magnitude for chart scaling
+        /// Maximum magnitude for chart scaling (use display magnitudes for smoother scaling)
         public var maxMagnitude: Float {
-            max(fftMagnitudes.max() ?? 0, Constants.magnitudeLimit)
+            max(displayMagnitudes.max() ?? fftMagnitudes.max() ?? 0, Constants.magnitudeLimit)
         }
         
         public init(
             fftMagnitudes: [Float] = [],
+            displayMagnitudes: [Float] = [],
             isMonitoring: Bool = false,
             errorMessage: String? = nil,
             selectedPreset: VisualizerPresetType = .lineChart,
@@ -83,6 +99,7 @@ public struct AudioVisualizerFeature: Reducer {
             fftBandQuantity: Int = Constants.defaultFFTBandQuantity
         ) {
             self.fftMagnitudes = fftMagnitudes
+            self.displayMagnitudes = displayMagnitudes.isEmpty ? fftMagnitudes : displayMagnitudes
             self.isMonitoring = isMonitoring
             self.errorMessage = errorMessage
             self.selectedPreset = selectedPreset
@@ -92,15 +109,98 @@ public struct AudioVisualizerFeature: Reducer {
             self.fftBandQuantity = fftBandQuantity
         }
         
-        // Custom Equatable implementation to exclude lastUpdateTime and fpsHistory from comparison
+        // Custom Equatable implementation to exclude lastUpdateTime, fpsHistory, and interpolation state from comparison
         public static func == (lhs: State, rhs: State) -> Bool {
             lhs.fftMagnitudes == rhs.fftMagnitudes &&
+            lhs.displayMagnitudes == rhs.displayMagnitudes &&
             lhs.isMonitoring == rhs.isMonitoring &&
             lhs.errorMessage == rhs.errorMessage &&
             lhs.selectedPreset == rhs.selectedPreset &&
             lhs.bufferSize == rhs.bufferSize &&
             lhs.fftBandQuantity == rhs.fftBandQuantity &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
+        }
+        
+        /// Update display magnitudes with interpolation/smoothing
+        mutating func updateDisplayMagnitudes() {
+            let now = Date()
+            
+            // If we have new FFT data, start interpolation
+            if !fftMagnitudes.isEmpty {
+                // Check if this is a new FFT update by comparing with last received FFT
+                let isNewUpdate = lastReceivedFFT.isEmpty || 
+                                 fftMagnitudes.count != lastReceivedFFT.count ||
+                                 (lastReceivedFFT.count == fftMagnitudes.count && 
+                                  zip(fftMagnitudes, lastReceivedFFT).contains { abs($0 - $1) > 0.01 })
+                
+                if isNewUpdate {
+                    // New FFT data arrived - start interpolation from current display position
+                    if previousFFTMagnitudes.isEmpty {
+                        // First update - initialize everything
+                        previousFFTMagnitudes = fftMagnitudes
+                        displayMagnitudes = fftMagnitudes
+                        lastReceivedFFT = fftMagnitudes
+                    } else {
+                        // New FFT data - start interpolating from current display to new FFT
+                        // Update previous to current display (where we are now)
+                        if displayMagnitudes.count == fftMagnitudes.count {
+                            previousFFTMagnitudes = displayMagnitudes
+                        } else {
+                            // Size mismatch - use last received FFT as starting point
+                            previousFFTMagnitudes = lastReceivedFFT
+                            displayMagnitudes = lastReceivedFFT
+                        }
+                        // Update last received to track this new FFT
+                        lastReceivedFFT = fftMagnitudes
+                    }
+                    // Reset interpolation timer
+                    lastFFTUpdateTime = now
+                    interpolationProgress = 0.0
+                }
+                
+                // Calculate interpolation progress based on time since last FFT update
+                // Use a longer interpolation duration to smooth out slower FFT updates
+                // For 1024 buffer at 44.1kHz, FFT updates ~every 23ms, so use ~50ms for smooth transition
+                if let lastFFTTime = lastFFTUpdateTime {
+                    let timeSinceFFT = now.timeIntervalSince(lastFFTTime)
+                    let interpolationDuration = 0.05 // 50ms - allows smooth interpolation even with slower FFT
+                    interpolationProgress = min(timeSinceFFT / interpolationDuration, 1.0)
+                } else {
+                    // No timestamp yet - initialize it
+                    lastFFTUpdateTime = now
+                    interpolationProgress = 0.0
+                }
+                
+                // Interpolate between previous (starting point) and current FFT (target)
+                if !previousFFTMagnitudes.isEmpty && previousFFTMagnitudes.count == fftMagnitudes.count {
+                    displayMagnitudes = zip(previousFFTMagnitudes, fftMagnitudes).map { prev, curr in
+                        // Linear interpolation with smoothstep easing for smoother transitions
+                        let t = Float(interpolationProgress)
+                        // Use smoothstep for easing (smooth S-curve)
+                        let easedT = t * t * (3.0 - 2.0 * t)
+                        return prev + (curr - prev) * easedT
+                    }
+                    
+                    // Once interpolation is complete, update previous to current for next cycle
+                    if interpolationProgress >= 1.0 {
+                        previousFFTMagnitudes = fftMagnitudes
+                    }
+                } else if previousFFTMagnitudes.count != fftMagnitudes.count {
+                    // Size mismatch - reset
+                    displayMagnitudes = fftMagnitudes
+                    previousFFTMagnitudes = fftMagnitudes
+                    lastReceivedFFT = fftMagnitudes
+                } else if previousFFTMagnitudes.isEmpty {
+                    // No previous data - use current directly
+                    displayMagnitudes = fftMagnitudes
+                    previousFFTMagnitudes = fftMagnitudes
+                    lastReceivedFFT = fftMagnitudes
+                }
+            } else {
+                displayMagnitudes = []
+                previousFFTMagnitudes = []
+                lastReceivedFFT = []
+            }
         }
         
         /// Update frame rate based on current time
@@ -149,6 +249,9 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// FFT magnitudes were updated
         case magnitudesUpdated([Float])
+        
+        /// Periodic update for interpolation (called even when no new FFT data)
+        case interpolationTick
         
         /// An error occurred
         case errorOccurred(String)
@@ -222,13 +325,24 @@ public struct AudioVisualizerFeature: Reducer {
             case .monitoringStopped:
                 state.isMonitoring = false
                 state.fftMagnitudes = []
+                state.displayMagnitudes = []
+                // previousFFTMagnitudes will be reset automatically when updateDisplayMagnitudes is called with empty data
                 state.frameRate = 0.0
                 state.fpsHistory.removeAll()
                 state.lastUpdateTime = nil
+                // Reset interpolation state by calling updateDisplayMagnitudes
+                state.updateDisplayMagnitudes()
                 return .none
                 
             case let .magnitudesUpdated(magnitudes):
                 state.fftMagnitudes = magnitudes
+                state.updateDisplayMagnitudes()
+                state.updateFrameRate()
+                return .none
+                
+            case .interpolationTick:
+                // Continuously update interpolation even when no new FFT data arrives
+                state.updateDisplayMagnitudes()
                 state.updateFrameRate()
                 return .none
                 
@@ -314,13 +428,26 @@ public struct AudioVisualizerFeature: Reducer {
     
     /// Observe magnitude updates from the audio monitor
     private func observeMagnitudes(audioMonitor: AudioWaveformMonitor, send: Send<Action>) async {
+        // Start a separate task for periodic interpolation updates
+        let interpolationTask = Task {
+            while await audioMonitor.isMonitoring {
+                await send(.interpolationTick)
+                // Update at ~60 FPS for smooth interpolation
+                try? await Task.sleep(nanoseconds: 16_666_666) // ~16.67ms = 60 FPS
+            }
+        }
+        
+        // Main loop: check for new FFT data
         while await audioMonitor.isMonitoring {
             let magnitudes = await audioMonitor.fftMagnitudes
             await send(.magnitudesUpdated(magnitudes))
             
-            // Update at ~30 FPS for smooth visualization
-            try? await Task.sleep(nanoseconds: 33_333_333) // ~30ms
+            // Check for updates at ~60 FPS
+            try? await Task.sleep(nanoseconds: 16_666_666) // ~16.67ms = 60 FPS
         }
+        
+        // Cancel interpolation task when monitoring stops
+        interpolationTask.cancel()
     }
 }
 
