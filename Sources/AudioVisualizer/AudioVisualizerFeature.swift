@@ -40,6 +40,9 @@ public struct AudioVisualizerFeature: Reducer {
     // MARK: - Action
     
     public enum Action: Equatable {
+        /// View appeared - auto-start monitoring
+        case onAppear
+        
         /// User tapped start/stop button
         case toggleMonitoringTapped
         
@@ -73,6 +76,23 @@ public struct AudioVisualizerFeature: Reducer {
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
+            case .onAppear:
+                // Auto-start monitoring if not already monitoring
+                if !state.isMonitoring {
+                    return .run { [audioMonitor] send in
+                        do {
+                            try await audioMonitor.startMonitoring()
+                            await send(.monitoringStarted)
+                            
+                            // Start observing magnitude updates
+                            await observeMagnitudes(audioMonitor: audioMonitor, send: send)
+                        } catch {
+                            await send(.errorOccurred(error.localizedDescription))
+                        }
+                    }
+                }
+                return .none
+                
             case .toggleMonitoringTapped:
                 if state.isMonitoring {
                     return .run { [audioMonitor] send in

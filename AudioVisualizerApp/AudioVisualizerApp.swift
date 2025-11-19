@@ -12,6 +12,9 @@ struct AudioVisualizerApp: App {
                 }
             )
         }
+        #if targetEnvironment(macCatalyst)
+        .defaultSize(width: 800, height: 600)
+        #endif
     }
 }
 

@@ -6,6 +6,9 @@ import ComposableArchitecture
 public struct AudioVisualizerView: View {
     public let store: StoreOf<AudioVisualizerFeature>
     
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    
     public init(store: StoreOf<AudioVisualizerFeature>) {
         self.store = store
     }
@@ -17,63 +20,107 @@ public struct AudioVisualizerView: View {
         endPoint: .trailing
     )
     
+    /// Determines if the device is an iPad or Mac
+    private var isRegularWidth: Bool {
+        horizontalSizeClass == .regular
+    }
+    
+    /// Determines if the device is in landscape orientation (iPad/Mac)
+    private var isRegularHeight: Bool {
+        verticalSizeClass == .regular
+    }
+    
+    /// Adaptive chart height based on available space
+    private func chartHeight(for geometry: GeometryProxy) -> CGFloat {
+        let availableHeight = geometry.size.height
+        let isLandscape = geometry.size.width > geometry.size.height
+        
+        #if targetEnvironment(macCatalyst)
+        // Mac Catalyst: No maximum constraints, scale freely with window size
+        if isLandscape {
+            return availableHeight * 0.8
+        } else {
+            return availableHeight * 0.75
+        }
+        #else
+        // iOS/iPad: Keep maximum constraints for device-specific layouts
+        if isRegularWidth && isRegularHeight {
+            // iPad portrait - use most of the screen
+            return min(availableHeight * 0.7, 600)
+        } else if isRegularWidth {
+            // iPad landscape - use most of the screen
+            return min(availableHeight * 0.75, 500)
+        } else if isLandscape {
+            // iPhone landscape - use most of the screen
+            return min(availableHeight * 0.7, 350)
+        } else {
+            // iPhone portrait - use most of the screen
+            return min(availableHeight * 0.65, 500)
+        }
+        #endif
+    }
+    
+    /// Adaptive spacing between elements
+    private var verticalSpacing: CGFloat {
+        if isRegularWidth {
+            return 30
+        } else {
+            return 20
+        }
+    }
+    
+    /// Adaptive horizontal padding
+    private var horizontalPadding: CGFloat {
+        if isRegularWidth {
+            return 40
+        } else {
+            return 20
+        }
+    }
+    
     public var body: some View {
-        WithViewStore(self.store, observe: { $0 }) { viewStore in
-            VStack(spacing: 20) {
-                // Title
-                Text("Live Audio Waveform")
-                    .font(.title2.bold())
-                    .padding(.top, 20)
-                
-                // Error message
-                if let errorMessage = viewStore.errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .padding(.horizontal)
-                        .onTapGesture {
-                            viewStore.send(.clearError)
-                        }
+        GeometryReader { geometry in
+            WithViewStore(self.store, observe: { $0 }) { viewStore in
+                VStack(spacing: verticalSpacing) {
+                    // Error message
+                    if let errorMessage = viewStore.errorMessage {
+                        Text(errorMessage)
+                            .font(isRegularWidth ? .body : .caption)
+                            .foregroundColor(.red)
+                            .padding(.horizontal, horizontalPadding)
+                            .multilineTextAlignment(.center)
+                            .onTapGesture {
+                                viewStore.send(.clearError)
+                            }
+                            .padding(.top, isRegularWidth ? 20 : 10)
+                    }
+                    
+                    // Chart visualization
+                    Chart(viewStore.downsampledMagnitudes.indices, id: \.self) { index in
+                        LineMark(
+                            x: .value("Frequency", index * Constants.downsampleFactor),
+                            y: .value("Magnitude", viewStore.downsampledMagnitudes[index])
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .lineStyle(StrokeStyle(
+                            lineWidth: isRegularWidth ? 4 : 3
+                        ))
+                        .foregroundStyle(chartGradient)
+                    }
+                    .chartYScale(domain: 0...viewStore.maxMagnitude)
+                    .chartXAxis(.hidden)
+                    .chartYAxis(.hidden)
+                    .frame(height: chartHeight(for: geometry))
+                    .padding(.horizontal, horizontalPadding)
+                    .animation(.easeOut, value: viewStore.downsampledMagnitudes)
+                    
+                    Spacer()
                 }
-                
-                // Chart visualization
-                Chart(viewStore.downsampledMagnitudes.indices, id: \.self) { index in
-                    LineMark(
-                        x: .value("Frequency", index * Constants.downsampleFactor),
-                        y: .value("Magnitude", viewStore.downsampledMagnitudes[index])
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .lineStyle(StrokeStyle(lineWidth: 3))
-                    .foregroundStyle(chartGradient)
-                }
-                .chartYScale(domain: 0...viewStore.maxMagnitude)
-                .chartXAxis(.hidden)
-                .chartYAxis(.hidden)
-                .frame(height: 300)
-                .padding()
-                .animation(.easeOut, value: viewStore.downsampledMagnitudes)
-                
-                Spacer()
-                
-                // Start/Stop button
-                Button(action: {
-                    viewStore.send(.toggleMonitoringTapped)
-                }) {
-                    Label(
-                        viewStore.isMonitoring ? "Stop" : "Start",
-                        systemImage: viewStore.isMonitoring ? "stop.fill" : "waveform"
-                    )
-                    .font(.title2.bold())
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(viewStore.isMonitoring ? Color.red : Color.blue)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear {
+                    viewStore.send(.onAppear)
                 }
             }
-            .padding(.bottom, 20)
-            .padding()
         }
     }
 }
