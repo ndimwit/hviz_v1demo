@@ -19,6 +19,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// Error message if any
         public var errorMessage: String?
         
+        /// Selected visualizer preset
+        public var selectedPreset: VisualizerPresetType = .lineChart
+        
         /// Maximum magnitude for chart scaling
         public var maxMagnitude: Float {
             max(fftMagnitudes.max() ?? 0, Constants.magnitudeLimit)
@@ -28,12 +31,14 @@ public struct AudioVisualizerFeature: Reducer {
             fftMagnitudes: [Float] = [],
             downsampledMagnitudes: [Float] = [],
             isMonitoring: Bool = false,
-            errorMessage: String? = nil
+            errorMessage: String? = nil,
+            selectedPreset: VisualizerPresetType = .lineChart
         ) {
             self.fftMagnitudes = fftMagnitudes
             self.downsampledMagnitudes = downsampledMagnitudes
             self.isMonitoring = isMonitoring
             self.errorMessage = errorMessage
+            self.selectedPreset = selectedPreset
         }
     }
     
@@ -63,6 +68,9 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// Clear error message
         case clearError
+        
+        /// Preset selection changed
+        case presetSelected(VisualizerPresetType)
     }
     
     // MARK: - Dependencies
@@ -142,6 +150,10 @@ public struct AudioVisualizerFeature: Reducer {
                 
             case .clearError:
                 state.errorMessage = nil
+                return .none
+                
+            case let .presetSelected(preset):
+                state.selectedPreset = preset
                 return .none
             }
         }

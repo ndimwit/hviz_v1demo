@@ -13,13 +13,6 @@ public struct AudioVisualizerView: View {
         self.store = store
     }
     
-    /// Gradient for the chart visualization
-    private let chartGradient = LinearGradient(
-        gradient: Gradient(colors: [.blue, .purple, .red]),
-        startPoint: .leading,
-        endPoint: .trailing
-    )
-    
     /// Determines if the device is an iPad or Mac
     private var isRegularWidth: Bool {
         horizontalSizeClass == .regular
@@ -95,24 +88,39 @@ public struct AudioVisualizerView: View {
                             .padding(.top, isRegularWidth ? 20 : 10)
                     }
                     
-                    // Chart visualization
-                    Chart(viewStore.downsampledMagnitudes.indices, id: \.self) { index in
-                        LineMark(
-                            x: .value("Frequency", index * Constants.downsampleFactor),
-                            y: .value("Magnitude", viewStore.downsampledMagnitudes[index])
-                        )
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(StrokeStyle(
-                            lineWidth: isRegularWidth ? 4 : 3
-                        ))
-                        .foregroundStyle(chartGradient)
+                    // Preset selector dropdown
+                    HStack {
+                        Text("Preset:")
+                            .font(isRegularWidth ? .body : .caption)
+                            .foregroundColor(.secondary)
+                        
+                        Picker("Visualizer Preset", selection: Binding(
+                            get: { viewStore.selectedPreset },
+                            set: { viewStore.send(.presetSelected($0)) }
+                        )) {
+                            ForEach(VisualizerPresetType.allCases) { preset in
+                                Text(preset.displayName)
+                                    .tag(preset)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: isRegularWidth ? 200 : 150)
                     }
-                    .chartYScale(domain: 0...viewStore.maxMagnitude)
-                    .chartXAxis(.hidden)
-                    .chartYAxis(.hidden)
-                    .frame(height: chartHeight(for: geometry))
                     .padding(.horizontal, horizontalPadding)
-                    .animation(.easeOut, value: viewStore.downsampledMagnitudes)
+                    .padding(.top, isRegularWidth ? 10 : 5)
+                    
+                    // Visualizer preset view
+                    let preset = viewStore.selectedPreset.preset
+                    AnyView(
+                        preset.makeView(
+                            magnitudes: viewStore.fftMagnitudes,
+                            downsampledMagnitudes: viewStore.downsampledMagnitudes,
+                            maxMagnitude: viewStore.maxMagnitude,
+                            isRegularWidth: isRegularWidth,
+                            chartHeight: chartHeight(for: geometry),
+                            horizontalPadding: horizontalPadding
+                        )
+                    )
                     
                     Spacer()
                 }
