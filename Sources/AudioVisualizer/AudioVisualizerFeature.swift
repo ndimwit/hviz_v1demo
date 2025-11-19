@@ -25,6 +25,12 @@ public struct AudioVisualizerFeature: Reducer {
         /// Current frame rate (FPS) - rounded to 1 decimal place
         public var frameRate: Double = 0.0
         
+        /// Selected audio buffer size (FFT buffer size, must be power of 2)
+        public var bufferSize: Int = Constants.defaultBufferSize
+        
+        /// Number of FFT bands to display
+        public var fftBandQuantity: Int = Constants.defaultFFTBandQuantity
+        
         /// Timestamp of last magnitude update (not included in Equatable comparison)
         var lastUpdateTime: Date?
         
@@ -40,7 +46,9 @@ public struct AudioVisualizerFeature: Reducer {
             errorMessage: String? = nil,
             selectedPreset: VisualizerPresetType = .lineChart,
             frameRate: Double = 0.0,
-            lastUpdateTime: Date? = nil
+            lastUpdateTime: Date? = nil,
+            bufferSize: Int = Constants.defaultBufferSize,
+            fftBandQuantity: Int = Constants.defaultFFTBandQuantity
         ) {
             self.fftMagnitudes = fftMagnitudes
             self.downsampledMagnitudes = downsampledMagnitudes
@@ -49,6 +57,8 @@ public struct AudioVisualizerFeature: Reducer {
             self.selectedPreset = selectedPreset
             self.frameRate = frameRate
             self.lastUpdateTime = lastUpdateTime
+            self.bufferSize = bufferSize
+            self.fftBandQuantity = fftBandQuantity
         }
         
         // Custom Equatable implementation to exclude lastUpdateTime from comparison
@@ -58,6 +68,8 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.isMonitoring == rhs.isMonitoring &&
             lhs.errorMessage == rhs.errorMessage &&
             lhs.selectedPreset == rhs.selectedPreset &&
+            lhs.bufferSize == rhs.bufferSize &&
+            lhs.fftBandQuantity == rhs.fftBandQuantity &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
         }
         
@@ -105,6 +117,12 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// Preset selection changed
         case presetSelected(VisualizerPresetType)
+        
+        /// Buffer size selection changed
+        case bufferSizeSelected(Int)
+        
+        /// FFT band quantity selection changed
+        case fftBandQuantitySelected(Int)
     }
     
     // MARK: - Dependencies
@@ -121,9 +139,9 @@ public struct AudioVisualizerFeature: Reducer {
             case .onAppear:
                 // Auto-start monitoring if not already monitoring
                 if !state.isMonitoring {
-                    return .run { [audioMonitor] send in
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftBandQuantity = state.fftBandQuantity] send in
                         do {
-                            try await audioMonitor.startMonitoring()
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)
                             
                             // Start observing magnitude updates
@@ -142,9 +160,9 @@ public struct AudioVisualizerFeature: Reducer {
                         await send(.monitoringStopped)
                     }
                 } else {
-                    return .run { [audioMonitor] send in
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftBandQuantity = state.fftBandQuantity] send in
                         do {
-                            try await audioMonitor.startMonitoring()
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)
                             
                             // Start observing magnitude updates
@@ -191,6 +209,68 @@ public struct AudioVisualizerFeature: Reducer {
                 
             case let .presetSelected(preset):
                 state.selectedPreset = preset
+                return .none
+                
+            case let .bufferSizeSelected(newBufferSize):
+                // Only change if different
+                guard newBufferSize != state.bufferSize else {
+                    return .none
+                }
+                
+                let wasMonitoring = state.isMonitoring
+                let currentBandQuantity = state.fftBandQuantity
+                state.bufferSize = newBufferSize
+                
+                // If monitoring, restart with new buffer size
+                if wasMonitoring {
+                    // Set monitoring to false temporarily to reflect the stop
+                    state.isMonitoring = false
+                    
+                    return .run { [audioMonitor, bufferSize = newBufferSize, fftBandQuantity = currentBandQuantity] send in
+                        do {
+                            // Stop and restart with new buffer size, preserving band quantity
+                            await audioMonitor.stopMonitoring()
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftBandQuantity: fftBandQuantity)
+                            await send(.monitoringStarted)
+                            
+                            // Start observing magnitude updates
+                            await observeMagnitudes(audioMonitor: audioMonitor, send: send)
+                        } catch {
+                            await send(.errorOccurred(error.localizedDescription))
+                        }
+                    }
+                }
+                
+                return .none
+                
+            case let .fftBandQuantitySelected(newBandQuantity):
+                // Only change if different
+                guard newBandQuantity != state.fftBandQuantity else {
+                    return .none
+                }
+                
+                let wasMonitoring = state.isMonitoring
+                state.fftBandQuantity = newBandQuantity
+                
+                // If monitoring, restart with new band quantity
+                if wasMonitoring {
+                    // Set monitoring to false temporarily to reflect the stop
+                    state.isMonitoring = false
+                    
+                    return .run { [audioMonitor, bandQuantity = newBandQuantity] send in
+                        do {
+                            // Change FFT band quantity (this will stop and restart internally)
+                            try await audioMonitor.changeFFTBandQuantity(bandQuantity)
+                            await send(.monitoringStarted)
+                            
+                            // Start observing magnitude updates
+                            await observeMagnitudes(audioMonitor: audioMonitor, send: send)
+                        } catch {
+                            await send(.errorOccurred(error.localizedDescription))
+                        }
+                    }
+                }
+                
                 return .none
             }
         }

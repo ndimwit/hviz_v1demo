@@ -71,6 +71,11 @@ public struct AudioVisualizerView: View {
         }
     }
     
+    /// Format buffer size for display
+    private func formatBufferSize(_ size: Int) -> String {
+        return "\(size)"
+    }
+    
     public var body: some View {
         GeometryReader { geometry in
             WithViewStore(self.store, observe: { $0 }) { viewStore in
@@ -88,10 +93,10 @@ public struct AudioVisualizerView: View {
                             .padding(.top, isRegularWidth ? 20 : 10)
                     }
                     
-                    // Controls row: Preset selector and Frame rate
-                    HStack {
+                    // Controls row: Preset selector, Buffer size, FFT bands, and Frame rate
+                    HStack(spacing: isRegularWidth ? 16 : 10) {
                         // Preset selector
-                        HStack {
+                        HStack(spacing: 4) {
                             Text("Preset:")
                                 .font(isRegularWidth ? .body : .caption)
                                 .foregroundColor(.secondary)
@@ -106,7 +111,45 @@ public struct AudioVisualizerView: View {
                                 }
                             }
                             .pickerStyle(.menu)
-                            .frame(maxWidth: isRegularWidth ? 200 : 150)
+                            .frame(maxWidth: isRegularWidth ? 180 : 130)
+                        }
+                        
+                        // Buffer size selector
+                        HStack(spacing: 4) {
+                            Text("Buffer:")
+                                .font(isRegularWidth ? .body : .caption)
+                                .foregroundColor(.secondary)
+                            
+                            Picker("Buffer Size", selection: Binding(
+                                get: { viewStore.bufferSize },
+                                set: { viewStore.send(.bufferSizeSelected($0)) }
+                            )) {
+                                ForEach(Constants.availableBufferSizes, id: \.self) { size in
+                                    Text(formatBufferSize(size))
+                                        .tag(size)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: isRegularWidth ? 100 : 80)
+                        }
+                        
+                        // FFT band quantity selector
+                        HStack(spacing: 4) {
+                            Text("Bands:")
+                                .font(isRegularWidth ? .body : .caption)
+                                .foregroundColor(.secondary)
+                            
+                            Picker("FFT Bands", selection: Binding(
+                                get: { viewStore.fftBandQuantity },
+                                set: { viewStore.send(.fftBandQuantitySelected($0)) }
+                            )) {
+                                ForEach(Constants.availableFFTBandQuantities, id: \.self) { quantity in
+                                    Text("\(quantity)")
+                                        .tag(quantity)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: isRegularWidth ? 100 : 80)
                         }
                         
                         Spacer()

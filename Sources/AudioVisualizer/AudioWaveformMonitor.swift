@@ -39,14 +39,29 @@ final class AudioWaveformMonitor {
     
     /// Start monitoring audio input from the microphone
     /// Delegates to AudioUnitMonitor for reliable Mac Catalyst support
-    func startMonitoring() async throws {
-        try await audioUnitMonitor.startMonitoring()
+    /// - Parameters:
+    ///   - bufferSize: FFT buffer size (must be power of 2, defaults to 8192)
+    ///   - fftBandQuantity: Number of FFT bands to display (defaults to Constants.defaultFFTBandQuantity)
+    func startMonitoring(bufferSize: Int = 8192, fftBandQuantity: Int = Constants.defaultFFTBandQuantity) async throws {
+        try await audioUnitMonitor.startMonitoring(bufferSize: bufferSize, fftBandQuantity: fftBandQuantity)
     }
     
     /// Stop monitoring audio input
     /// Delegates to AudioUnitMonitor
     func stopMonitoring() async {
         await audioUnitMonitor.stopMonitoring()
+    }
+    
+    /// Change the buffer size, stopping and restarting monitoring if needed
+    /// - Parameter bufferSize: New FFT buffer size (must be power of 2)
+    func changeBufferSize(_ bufferSize: Int) async throws {
+        try await audioUnitMonitor.changeBufferSize(bufferSize)
+    }
+    
+    /// Change the FFT band quantity, stopping and restarting monitoring if needed
+    /// - Parameter fftBandQuantity: New number of FFT bands to display
+    func changeFFTBandQuantity(_ fftBandQuantity: Int) async throws {
+        try await audioUnitMonitor.changeFFTBandQuantity(fftBandQuantity)
     }
 }
 

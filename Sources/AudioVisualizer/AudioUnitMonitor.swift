@@ -16,14 +16,17 @@ final class AudioUnitMonitor {
     /// Audio unit instance (needs to be accessible from C callback)
     var audioUnit: AudioUnit?
     
-    /// FFT configuration buffer size
-    private let bufferSize = 8192
+    /// FFT configuration buffer size (must be power of 2 for FFT)
+    private var bufferSize: Int = 8192
+    
+    /// Number of FFT bands to display
+    private var fftBandQuantity: Int = Constants.defaultFFTBandQuantity
     
     /// FFT configuration setup
     private var fftSetup: OpaquePointer?
     
     /// Store the FFT magnitude results (thread-safe access via MainActor)
-    @MainActor private(set) var fftMagnitudes = [Float](repeating: 0, count: Constants.sampleAmount)
+    @MainActor private(set) var fftMagnitudes: [Float] = []
     
     /// Track if audio monitoring is running
     var isMonitoring = false
@@ -57,7 +60,22 @@ final class AudioUnitMonitor {
     // MARK: - Public Methods
     
     /// Start monitoring audio input from the microphone
-    func startMonitoring() async throws {
+    /// - Parameters:
+    ///   - bufferSize: FFT buffer size (must be power of 2, defaults to 8192)
+    ///   - fftBandQuantity: Number of FFT bands to display (defaults to Constants.defaultFFTBandQuantity)
+    func startMonitoring(bufferSize: Int = 8192, fftBandQuantity: Int = Constants.defaultFFTBandQuantity) async throws {
+        // Validate buffer size is a power of 2
+        guard bufferSize > 0 && (bufferSize & (bufferSize - 1)) == 0 else {
+            throw AudioVisualizerError.invalidAudioFormat
+        }
+        
+        self.bufferSize = bufferSize
+        self.fftBandQuantity = fftBandQuantity
+        
+        // Initialize magnitudes array with correct size
+        await MainActor.run {
+            fftMagnitudes = [Float](repeating: 0, count: fftBandQuantity)
+        }
         print("🚀 [AudioUnit] startMonitoring() called")
         guard !isMonitoring else {
             print("⚠️ [AudioUnit] Already monitoring, returning")
@@ -121,7 +139,18 @@ final class AudioUnitMonitor {
         }
         #endif
         
-        // Create FFT setup
+        // Calculate required FFT buffer size from band quantity
+        // Use the larger of the selected buffer size or the calculated size
+        let requiredBufferSize = max(bufferSize, Constants.calculateFFTBufferSize(for: fftBandQuantity))
+        self.bufferSize = requiredBufferSize
+        
+        // Destroy old FFT setup if it exists
+        if let oldSetup = fftSetup {
+            vDSP_DFT_DestroySetup(oldSetup)
+            fftSetup = nil
+        }
+        
+        // Create FFT setup with the calculated buffer size
         fftSetup = vDSP_DFT_zrop_CreateSetup(
             nil,
             UInt(bufferSize),
@@ -129,8 +158,11 @@ final class AudioUnitMonitor {
         )
         
         guard fftSetup != nil else {
+            print("❌ [AudioUnit] Failed to create FFT setup with buffer size: \(bufferSize), band quantity: \(fftBandQuantity)")
             throw AudioVisualizerError.fftSetupFailed
         }
+        
+        print("✅ [AudioUnit] Created FFT setup - buffer size: \(bufferSize), band quantity: \(fftBandQuantity)")
         
         // Set up AudioUnit
         print("🔧 [AudioUnit] Setting up AudioUnit...")
@@ -171,9 +203,59 @@ final class AudioUnitMonitor {
         
         // Reset magnitudes on MainActor
         await MainActor.run {
-            fftMagnitudes = [Float](repeating: 0, count: Constants.sampleAmount)
+            fftMagnitudes = [Float](repeating: 0, count: fftBandQuantity)
         }
         isMonitoring = false
+    }
+    
+    /// Change the buffer size, stopping and restarting monitoring if needed
+    /// - Parameter newBufferSize: New FFT buffer size (must be power of 2)
+    func changeBufferSize(_ newBufferSize: Int) async throws {
+        // Validate buffer size is a power of 2
+        guard newBufferSize > 0 && (newBufferSize & (newBufferSize - 1)) == 0 else {
+            throw AudioVisualizerError.invalidAudioFormat
+        }
+        
+        let wasMonitoring = isMonitoring
+        let currentBandQuantity = fftBandQuantity
+        
+        // Stop monitoring if it's running
+        if wasMonitoring {
+            await stopMonitoring()
+        }
+        
+        // Restart monitoring if it was running
+        if wasMonitoring {
+            try await startMonitoring(bufferSize: newBufferSize, fftBandQuantity: currentBandQuantity)
+        } else {
+            self.bufferSize = newBufferSize
+        }
+    }
+    
+    /// Change the FFT band quantity, stopping and restarting monitoring if needed
+    /// - Parameter newBandQuantity: New number of FFT bands to display
+    func changeFFTBandQuantity(_ newBandQuantity: Int) async throws {
+        guard newBandQuantity > 0 else {
+            throw AudioVisualizerError.invalidAudioFormat
+        }
+        
+        let wasMonitoring = isMonitoring
+        let currentBufferSize = bufferSize
+        
+        // Stop monitoring if it's running
+        if wasMonitoring {
+            await stopMonitoring()
+        }
+        
+        // Restart monitoring if it was running
+        if wasMonitoring {
+            try await startMonitoring(bufferSize: currentBufferSize, fftBandQuantity: newBandQuantity)
+        } else {
+            self.fftBandQuantity = newBandQuantity
+            await MainActor.run {
+                fftMagnitudes = [Float](repeating: 0, count: newBandQuantity)
+            }
+        }
     }
     
     // MARK: - Private Methods
@@ -628,11 +710,11 @@ final class AudioUnitMonitor {
     /// Perform Fast Fourier Transform on audio data
     private func performFFT(data: [Float]) async -> [Float] {
         guard data.count >= bufferSize else {
-            return [Float](repeating: 0, count: Constants.sampleAmount)
+            return [Float](repeating: 0, count: fftBandQuantity)
         }
         
         guard let fftSetup = fftSetup else {
-            return [Float](repeating: 0, count: Constants.sampleAmount)
+            return [Float](repeating: 0, count: fftBandQuantity)
         }
         
         // Prepare input data (only use first bufferSize samples)
@@ -644,7 +726,10 @@ final class AudioUnitMonitor {
         // Allocate memory for FFT output
         var realOut = [Float](repeating: 0, count: bufferSize)
         var imagOut = [Float](repeating: 0, count: bufferSize)
-        var magnitudes = [Float](repeating: 0, count: Constants.sampleAmount)
+        
+        // For a real FFT, we get bufferSize/2 + 1 frequency bins
+        let fftOutputSize = bufferSize / 2 + 1
+        var fftMagnitudesFull = [Float](repeating: 0, count: fftOutputSize)
         
         // Perform FFT using Accelerate framework
         inputData.withUnsafeBufferPointer { inputPtr in
@@ -666,17 +751,26 @@ final class AudioUnitMonitor {
                             imagp: imagOutPtr.baseAddress!
                         )
                         
-                        // Compute and save the magnitude of each frequency component
+                        // Compute magnitude of each frequency component
                         vDSP_zvabs(
                             &complex,
                             1,
-                            &magnitudes,
+                            &fftMagnitudesFull,
                             1,
-                            UInt(Constants.sampleAmount)
+                            UInt(fftOutputSize)
                         )
                     }
                 }
             }
+        }
+        
+        // Extract the desired number of bands (take first fftBandQuantity bins)
+        let bandsToUse = min(fftBandQuantity, fftMagnitudesFull.count)
+        var magnitudes = Array(fftMagnitudesFull.prefix(bandsToUse))
+        
+        // Pad with zeros if we need more bands than available
+        if magnitudes.count < fftBandQuantity {
+            magnitudes.append(contentsOf: [Float](repeating: 0, count: fftBandQuantity - magnitudes.count))
         }
         
         // Limit magnitudes to prevent distortion
