@@ -37,6 +37,22 @@ public struct AudioVisualizerFeature: Reducer {
         /// Selected visualizer preset
         public var selectedPreset: VisualizerPresetType = .lineChart
         
+        /// Rendering mode (chunk or scrolling)
+        public var renderingMode: RenderingMode = .chunk
+        
+        /// Scrolling update rate (frames per second)
+        public var scrollingRate: Double = Constants.defaultScrollingRate
+        
+        /// Scrolling buffer for historical frames (for scrolling mode)
+        /// Each element is a frame of data (magnitudes or samples)
+        private var scrollingBuffer: [[Float]] = []
+        
+        /// Maximum number of frames to keep in scrolling buffer
+        private let maxScrollingFrames = 200
+        
+        /// Timestamp of last scrolling buffer update (not included in Equatable comparison)
+        private var lastScrollingUpdateTime: Date?
+        
         /// Current frame rate (FPS) - rounded to 1 decimal place
         public var frameRate: Double = 0.0
         
@@ -96,6 +112,7 @@ public struct AudioVisualizerFeature: Reducer {
             isMonitoring: Bool = false,
             errorMessage: String? = nil,
             selectedPreset: VisualizerPresetType = .lineChart,
+            renderingMode: RenderingMode = .chunk,
             frameRate: Double = 0.0,
             lastUpdateTime: Date? = nil,
             bufferSize: Int = Constants.defaultBufferSize,
@@ -106,10 +123,12 @@ public struct AudioVisualizerFeature: Reducer {
             self.isMonitoring = isMonitoring
             self.errorMessage = errorMessage
             self.selectedPreset = selectedPreset
+            self.renderingMode = renderingMode
             self.frameRate = frameRate
             self.lastUpdateTime = lastUpdateTime
             self.bufferSize = bufferSize
             self.fftBandQuantity = fftBandQuantity
+            self.scrollingRate = Constants.defaultScrollingRate
         }
         
         // Custom Equatable implementation to exclude lastUpdateTime, fpsHistory, and interpolation state from comparison
@@ -120,9 +139,79 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.isMonitoring == rhs.isMonitoring &&
             lhs.errorMessage == rhs.errorMessage &&
             lhs.selectedPreset == rhs.selectedPreset &&
+            lhs.renderingMode == rhs.renderingMode &&
+            lhs.scrollingRate == rhs.scrollingRate &&
             lhs.bufferSize == rhs.bufferSize &&
             lhs.fftBandQuantity == rhs.fftBandQuantity &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
+        }
+        
+        /// Update scrolling buffer with new frame data (rate-controlled)
+        mutating func updateScrollingBuffer(rawSamples: [Float]) {
+            guard renderingMode == .scrolling else {
+                // Clear buffer when not in scrolling mode
+                if !scrollingBuffer.isEmpty {
+                    scrollingBuffer.removeAll()
+                }
+                lastScrollingUpdateTime = nil
+                return
+            }
+            
+            // Rate control: only update if enough time has passed
+            let now = Date()
+            if let lastUpdate = lastScrollingUpdateTime {
+                let timeSinceLastUpdate = now.timeIntervalSince(lastUpdate)
+                let minInterval = 1.0 / scrollingRate // Minimum time between updates
+                
+                // Skip update if not enough time has passed
+                if timeSinceLastUpdate < minInterval {
+                    return
+                }
+            }
+            
+            // For scrolling mode, determine which data to store based on preset
+            // Oscilloscope uses rawSamples (time-domain), others use displayMagnitudes (frequency-domain)
+            let currentFrame: [Float]
+            switch selectedPreset {
+            case .oscilloscope:
+                // Oscilloscope: use raw audio samples for time-domain visualization
+                currentFrame = rawSamples.isEmpty ? displayMagnitudes : rawSamples
+            default:
+                // Frequency-domain presets: use displayMagnitudes
+                currentFrame = displayMagnitudes.isEmpty ? fftMagnitudes : displayMagnitudes
+            }
+            
+            if !currentFrame.isEmpty {
+                // Add new frame to buffer
+                scrollingBuffer.append(currentFrame)
+                
+                // Limit buffer size
+                if scrollingBuffer.count > maxScrollingFrames {
+                    scrollingBuffer.removeFirst()
+                }
+                
+                // Update timestamp
+                lastScrollingUpdateTime = now
+            }
+        }
+        
+        /// Clear the scrolling buffer
+        mutating func clearScrollingBuffer() {
+            scrollingBuffer.removeAll()
+            lastScrollingUpdateTime = nil
+        }
+        
+        /// Reset the scrolling update timer (allows immediate update)
+        mutating func resetScrollingUpdateTimer() {
+            lastScrollingUpdateTime = nil
+        }
+        
+        /// Get scrolling data (read-only)
+        public var scrollingData: [[Float]]? {
+            guard renderingMode == .scrolling && !scrollingBuffer.isEmpty else {
+                return nil
+            }
+            return scrollingBuffer
         }
         
         /// Update display magnitudes with interpolation/smoothing
@@ -269,6 +358,12 @@ public struct AudioVisualizerFeature: Reducer {
         /// Preset selection changed
         case presetSelected(VisualizerPresetType)
         
+        /// Rendering mode selection changed
+        case renderingModeSelected(RenderingMode)
+        
+        /// Scrolling rate selection changed
+        case scrollingRateSelected(Double)
+        
         /// Buffer size selection changed
         case bufferSizeSelected(Int)
         
@@ -334,6 +429,7 @@ public struct AudioVisualizerFeature: Reducer {
                 state.fftMagnitudes = []
                 state.displayMagnitudes = []
                 state.rawAudioSamples = []
+                state.clearScrollingBuffer()
                 // previousFFTMagnitudes will be reset automatically when updateDisplayMagnitudes is called with empty data
                 state.frameRate = 0.0
                 state.fpsHistory.removeAll()
@@ -345,17 +441,20 @@ public struct AudioVisualizerFeature: Reducer {
             case let .magnitudesUpdated(magnitudes):
                 state.fftMagnitudes = magnitudes
                 state.updateDisplayMagnitudes()
+                state.updateScrollingBuffer(rawSamples: state.rawAudioSamples)
                 state.updateFrameRate()
                 return .none
                 
             case .interpolationTick:
                 // Continuously update interpolation even when no new FFT data arrives
                 state.updateDisplayMagnitudes()
+                state.updateScrollingBuffer(rawSamples: state.rawAudioSamples)
                 state.updateFrameRate()
                 return .none
                 
             case let .rawSamplesUpdated(samples):
                 state.rawAudioSamples = samples
+                state.updateScrollingBuffer(rawSamples: samples)
                 return .none
                 
             case let .errorOccurred(message):
@@ -369,6 +468,20 @@ public struct AudioVisualizerFeature: Reducer {
                 
             case let .presetSelected(preset):
                 state.selectedPreset = preset
+                // Clear scrolling buffer when switching presets to ensure clean transition
+                state.clearScrollingBuffer()
+                return .none
+                
+            case let .renderingModeSelected(mode):
+                state.renderingMode = mode
+                // Clear scrolling buffer when switching modes
+                state.clearScrollingBuffer()
+                return .none
+                
+            case let .scrollingRateSelected(rate):
+                state.scrollingRate = rate
+                // Reset update timer to allow immediate update with new rate
+                state.resetScrollingUpdateTimer()
                 return .none
                 
             case let .bufferSizeSelected(newBufferSize):

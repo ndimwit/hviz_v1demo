@@ -152,6 +152,46 @@ public struct AudioVisualizerView: View {
                             .frame(maxWidth: isRegularWidth ? 100 : 80)
                         }
                         
+                        // Rendering mode selector
+                        HStack(spacing: 4) {
+                            Text("Mode:")
+                                .font(isRegularWidth ? .body : .caption)
+                                .foregroundColor(.secondary)
+                            
+                            Picker("Rendering Mode", selection: Binding(
+                                get: { viewStore.renderingMode },
+                                set: { viewStore.send(.renderingModeSelected($0)) }
+                            )) {
+                                ForEach(RenderingMode.allCases) { mode in
+                                    Text(mode.displayName)
+                                        .tag(mode)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: isRegularWidth ? 100 : 80)
+                        }
+                        
+                        // Scrolling rate selector (only visible in scrolling mode)
+                        if viewStore.renderingMode == .scrolling {
+                            HStack(spacing: 4) {
+                                Text("Rate:")
+                                    .font(isRegularWidth ? .body : .caption)
+                                    .foregroundColor(.secondary)
+                                
+                                Picker("Scrolling Rate", selection: Binding(
+                                    get: { viewStore.scrollingRate },
+                                    set: { viewStore.send(.scrollingRateSelected($0)) }
+                                )) {
+                                    ForEach(Constants.availableScrollingRates, id: \.self) { rate in
+                                        Text("\(Int(rate)) fps")
+                                            .tag(rate)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: isRegularWidth ? 90 : 70)
+                            }
+                        }
+                        
                         Spacer()
                         
                         // Frame rate statistics display
@@ -203,6 +243,8 @@ public struct AudioVisualizerView: View {
                             magnitudes: viewStore.displayMagnitudes.isEmpty ? viewStore.fftMagnitudes : viewStore.displayMagnitudes,
                             rawAudioSamples: viewStore.rawAudioSamples,
                             maxMagnitude: viewStore.maxMagnitude,
+                            renderingMode: viewStore.renderingMode,
+                            scrollingData: viewStore.scrollingData,
                             isRegularWidth: isRegularWidth,
                             chartHeight: chartHeight(for: geometry),
                             availableWidth: availableWidth,

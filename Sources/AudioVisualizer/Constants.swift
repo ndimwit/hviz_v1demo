@@ -15,14 +15,20 @@ public enum Constants {
     public static let availableBufferSizes: [Int] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
     
     /// Default buffer size
-    public static let defaultBufferSize: Int = 8192
+    public static let defaultBufferSize: Int = 512
     
     /// Available FFT band quantities (number of frequency bands to display)
     /// Matches availableBufferSizes to keep them in sync
     public static let availableFFTBandQuantities: [Int] = availableBufferSizes
     
     /// Default FFT band quantity
-    public static let defaultFFTBandQuantity: Int = 8192
+    public static let defaultFFTBandQuantity: Int = 512
+    
+    /// Available scrolling update rates (frames per second)
+    public static let availableScrollingRates: [Double] = [1, 2, 5, 10, 15, 20, 30, 60]
+    
+    /// Default scrolling update rate (frames per second)
+    public static let defaultScrollingRate: Double = 30
     
     /// Calculate required FFT buffer size from desired number of bands
     /// For a real FFT, we get N/2+1 bins from N samples
