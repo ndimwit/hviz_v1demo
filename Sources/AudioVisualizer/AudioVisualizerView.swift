@@ -154,21 +154,40 @@ public struct AudioVisualizerView: View {
                         
                         Spacer()
                         
-                        // Frame rate display
-                        if viewStore.isMonitoring && viewStore.frameRate > 0 {
-                            HStack(spacing: 4) {
-                                Text("FPS:")
-                                    .font(isRegularWidth ? .body : .caption)
-                                    .foregroundColor(.secondary)
-                                Text(String(format: "%.1f", viewStore.frameRate))
-                                    .font(isRegularWidth ? .body.monospacedDigit() : .caption.monospacedDigit())
-                                    .foregroundColor(.primary)
-                                    .padding(.horizontal, isRegularWidth ? 8 : 6)
-                                    .padding(.vertical, isRegularWidth ? 4 : 2)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .fill(Color.secondary.opacity(0.1))
-                                    )
+                        // Frame rate statistics display
+                        if viewStore.isMonitoring {
+                            let stats = viewStore.fpsStatistics
+                            if stats.mean > 0 {
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    HStack(spacing: 4) {
+                                        Text("FPS:")
+                                            .font(isRegularWidth ? .body : .caption)
+                                            .foregroundColor(.secondary)
+                                        Text(String(format: "%.1f", stats.mean))
+                                            .font(isRegularWidth ? .body.monospacedDigit() : .caption.monospacedDigit())
+                                            .foregroundColor(.primary)
+                                    }
+                                    HStack(spacing: 4) {
+                                        Text("min:")
+                                            .font(isRegularWidth ? .caption2 : .caption2)
+                                            .foregroundColor(.secondary)
+                                        Text(String(format: "%.1f", stats.min))
+                                            .font(isRegularWidth ? .caption2.monospacedDigit() : .caption2.monospacedDigit())
+                                            .foregroundColor(.secondary)
+                                        Text("max:")
+                                            .font(isRegularWidth ? .caption2 : .caption2)
+                                            .foregroundColor(.secondary)
+                                        Text(String(format: "%.1f", stats.max))
+                                            .font(isRegularWidth ? .caption2.monospacedDigit() : .caption2.monospacedDigit())
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .padding(.horizontal, isRegularWidth ? 8 : 6)
+                                .padding(.vertical, isRegularWidth ? 4 : 2)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.secondary.opacity(0.1))
+                                )
                             }
                         }
                     }
@@ -177,13 +196,14 @@ public struct AudioVisualizerView: View {
                     
                     // Visualizer preset view
                     let preset = viewStore.selectedPreset.preset
+                    let availableWidth = geometry.size.width - (horizontalPadding * 2)
                     AnyView(
                         preset.makeView(
                             magnitudes: viewStore.fftMagnitudes,
-                            downsampledMagnitudes: viewStore.downsampledMagnitudes,
                             maxMagnitude: viewStore.maxMagnitude,
                             isRegularWidth: isRegularWidth,
                             chartHeight: chartHeight(for: geometry),
+                            availableWidth: availableWidth,
                             horizontalPadding: horizontalPadding
                         )
                     )

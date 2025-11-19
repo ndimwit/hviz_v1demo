@@ -10,9 +10,6 @@ public struct AudioVisualizerFeature: Reducer {
         /// FFT magnitudes from audio analysis
         public var fftMagnitudes: [Float] = []
         
-        /// Downsampled magnitudes for visualization
-        public var downsampledMagnitudes: [Float] = []
-        
         /// Whether audio monitoring is currently active
         public var isMonitoring = false
         
@@ -25,6 +22,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// Current frame rate (FPS) - rounded to 1 decimal place
         public var frameRate: Double = 0.0
         
+        /// FPS history for the last second (timestamp, FPS pairs)
+        var fpsHistory: [(timestamp: Date, fps: Double)] = []
+        
         /// Selected audio buffer size (FFT buffer size, must be power of 2)
         public var bufferSize: Int = Constants.defaultBufferSize
         
@@ -34,6 +34,39 @@ public struct AudioVisualizerFeature: Reducer {
         /// Timestamp of last magnitude update (not included in Equatable comparison)
         var lastUpdateTime: Date?
         
+        /// FPS statistics for the last second
+        public struct FPSStatistics {
+            public let mean: Double
+            public let min: Double
+            public let max: Double
+            
+            public init(mean: Double, min: Double, max: Double) {
+                self.mean = mean
+                self.min = min
+                self.max = max
+            }
+        }
+        
+        /// Calculate FPS statistics from the last second of data
+        public var fpsStatistics: FPSStatistics {
+            let oneSecondAgo = Date().addingTimeInterval(-1.0)
+            let recentFPS = fpsHistory.filter { $0.timestamp >= oneSecondAgo }.map { $0.fps }
+            
+            guard !recentFPS.isEmpty else {
+                return FPSStatistics(mean: 0, min: 0, max: 0)
+            }
+            
+            let mean = recentFPS.reduce(0, +) / Double(recentFPS.count)
+            let min = recentFPS.min() ?? 0
+            let max = recentFPS.max() ?? 0
+            
+            return FPSStatistics(
+                mean: round(mean * 10) / 10.0,
+                min: round(min * 10) / 10.0,
+                max: round(max * 10) / 10.0
+            )
+        }
+        
         /// Maximum magnitude for chart scaling
         public var maxMagnitude: Float {
             max(fftMagnitudes.max() ?? 0, Constants.magnitudeLimit)
@@ -41,7 +74,6 @@ public struct AudioVisualizerFeature: Reducer {
         
         public init(
             fftMagnitudes: [Float] = [],
-            downsampledMagnitudes: [Float] = [],
             isMonitoring: Bool = false,
             errorMessage: String? = nil,
             selectedPreset: VisualizerPresetType = .lineChart,
@@ -51,7 +83,6 @@ public struct AudioVisualizerFeature: Reducer {
             fftBandQuantity: Int = Constants.defaultFFTBandQuantity
         ) {
             self.fftMagnitudes = fftMagnitudes
-            self.downsampledMagnitudes = downsampledMagnitudes
             self.isMonitoring = isMonitoring
             self.errorMessage = errorMessage
             self.selectedPreset = selectedPreset
@@ -61,10 +92,9 @@ public struct AudioVisualizerFeature: Reducer {
             self.fftBandQuantity = fftBandQuantity
         }
         
-        // Custom Equatable implementation to exclude lastUpdateTime from comparison
+        // Custom Equatable implementation to exclude lastUpdateTime and fpsHistory from comparison
         public static func == (lhs: State, rhs: State) -> Bool {
             lhs.fftMagnitudes == rhs.fftMagnitudes &&
-            lhs.downsampledMagnitudes == rhs.downsampledMagnitudes &&
             lhs.isMonitoring == rhs.isMonitoring &&
             lhs.errorMessage == rhs.errorMessage &&
             lhs.selectedPreset == rhs.selectedPreset &&
@@ -78,12 +108,26 @@ public struct AudioVisualizerFeature: Reducer {
             let now = Date()
             if let lastTime = lastUpdateTime {
                 let timeDelta = now.timeIntervalSince(lastTime)
-                if timeDelta > 0 {
-                    // Calculate FPS and round to 1 decimal place
-                    let fps = 1.0 / timeDelta
+                // Only calculate FPS if timeDelta is reasonable (at least 1ms = 0.001 seconds)
+                // This prevents unrealistic FPS values from rapid successive updates
+                // Minimum timeDelta of 0.001 seconds = max 1000 FPS (which we'll cap at 120)
+                if timeDelta >= 0.001 {
+                    // Calculate FPS and cap at reasonable maximum (120 FPS for display)
+                    // This represents a realistic maximum frame rate for most displays
+                    let fps = min(1.0 / timeDelta, 120.0)
                     frameRate = round(fps * 10) / 10.0
+                    
+                    // Add to FPS history
+                    fpsHistory.append((timestamp: now, fps: frameRate))
+                    
+                    // Remove entries older than 1 second
+                    let oneSecondAgo = now.addingTimeInterval(-1.0)
+                    fpsHistory.removeAll { $0.timestamp < oneSecondAgo }
                 }
+                // If timeDelta is too small (< 1ms), skip this measurement
+                // but still update lastUpdateTime to prevent accumulation
             }
+            // Always update lastUpdateTime to track when we last checked
             lastUpdateTime = now
         }
     }
@@ -105,9 +149,6 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// FFT magnitudes were updated
         case magnitudesUpdated([Float])
-        
-        /// Downsampled magnitudes were updated
-        case downsampledMagnitudesUpdated([Float])
         
         /// An error occurred
         case errorOccurred(String)
@@ -181,20 +222,13 @@ public struct AudioVisualizerFeature: Reducer {
             case .monitoringStopped:
                 state.isMonitoring = false
                 state.fftMagnitudes = []
-                state.downsampledMagnitudes = []
                 state.frameRate = 0.0
+                state.fpsHistory.removeAll()
                 state.lastUpdateTime = nil
                 return .none
                 
             case let .magnitudesUpdated(magnitudes):
                 state.fftMagnitudes = magnitudes
-                return .run { [audioMonitor] send in
-                    let downsampled = await audioMonitor.downsampledMagnitudes
-                    await send(.downsampledMagnitudesUpdated(downsampled))
-                }
-                
-            case let .downsampledMagnitudesUpdated(magnitudes):
-                state.downsampledMagnitudes = magnitudes
                 state.updateFrameRate()
                 return .none
                 

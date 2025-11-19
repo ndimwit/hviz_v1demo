@@ -18,10 +18,11 @@ public enum Constants {
     public static let defaultBufferSize: Int = 8192
     
     /// Available FFT band quantities (number of frequency bands to display)
-    public static let availableFFTBandQuantities: [Int] = [32, 64, 128, 256, 512, 1024, 2048]
+    /// Matches availableBufferSizes to keep them in sync
+    public static let availableFFTBandQuantities: [Int] = availableBufferSizes
     
     /// Default FFT band quantity
-    public static let defaultFFTBandQuantity: Int = 200
+    public static let defaultFFTBandQuantity: Int = 8192
     
     /// Calculate required FFT buffer size from desired number of bands
     /// For a real FFT, we get N/2+1 bins from N samples
