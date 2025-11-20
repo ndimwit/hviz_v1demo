@@ -256,6 +256,7 @@ public struct AudioVisualizerView: View {
                             maxMagnitude: viewStore.maxMagnitude,
                             renderingMode: viewStore.renderingMode,
                             scrollingData: viewStore.scrollingData,
+                            continuousWaveformData: viewStore.continuousWaveformData,
                             isRegularWidth: isRegularWidth,
                             chartHeight: chartHeight(for: geometry),
                             availableWidth: availableWidth,

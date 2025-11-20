@@ -17,6 +17,7 @@ public protocol VisualizerPreset {
         maxMagnitude: Float,
         renderingMode: RenderingMode,
         scrollingData: [[Float]]?,
+        continuousWaveformData: [Float]?,
         isRegularWidth: Bool,
         chartHeight: CGFloat,
         availableWidth: CGFloat,
@@ -80,6 +81,7 @@ public struct LineChartPreset: VisualizerPreset {
         maxMagnitude: Float,
         renderingMode: RenderingMode,
         scrollingData: [[Float]]?,
+        continuousWaveformData: [Float]?,
         isRegularWidth: Bool,
         chartHeight: CGFloat,
         availableWidth: CGFloat,
@@ -198,6 +200,7 @@ public struct HistogramBandsPreset: VisualizerPreset {
         maxMagnitude: Float,
         renderingMode: RenderingMode,
         scrollingData: [[Float]]?,
+        continuousWaveformData: [Float]?,
         isRegularWidth: Bool,
         chartHeight: CGFloat,
         availableWidth: CGFloat,
@@ -333,6 +336,7 @@ public struct OscilloscopePreset: VisualizerPreset {
         maxMagnitude: Float,
         renderingMode: RenderingMode,
         scrollingData: [[Float]]?,
+        continuousWaveformData: [Float]?,
         isRegularWidth: Bool,
         chartHeight: CGFloat,
         availableWidth: CGFloat,
@@ -346,7 +350,6 @@ public struct OscilloscopePreset: VisualizerPreset {
             GeometryReader { geometry in
                 let chartWidth = geometry.size.width - (horizontalPadding * 2)
                 let frameWidth = max(1.0, chartWidth / CGFloat(scrollingFrames.count))
-                let centerY = chartHeight / 2.0
                 
                 // Calculate max amplitude across all frames
                 let maxAmplitude = scrollingFrames.flatMap { $0 }.reduce(0.0) { max(abs($0), abs($1)) }
@@ -395,6 +398,36 @@ public struct OscilloscopePreset: VisualizerPreset {
                 .padding(.horizontal, horizontalPadding)
             }
             .frame(height: chartHeight)
+        } else if renderingMode == .continuous, let continuousSamples = continuousWaveformData, !continuousSamples.isEmpty {
+            // Continuous mode: smooth, phase-continuous waveform display
+            // Use the continuous waveform buffer which maintains a rolling window
+            let targetPointCount = max(Int(availableWidth), continuousSamples.count)
+            let downsampledSamples = downsampleMagnitudes(continuousSamples, to: targetPointCount)
+            let maxAmplitude = max(abs(continuousSamples.max() ?? 0), abs(continuousSamples.min() ?? 0), 0.01)
+            
+            Chart(downsampledSamples.indices, id: \.self) { index in
+                LineMark(
+                    x: .value("Time", index),
+                    y: .value("Amplitude", Double(downsampledSamples[index]))
+                )
+                .interpolationMethod(.catmullRom)
+                .lineStyle(StrokeStyle(
+                    lineWidth: isRegularWidth ? 2 : 1.5
+                ))
+                .foregroundStyle(
+                    LinearGradient(
+                        gradient: Gradient(colors: [.cyan, .blue, .purple]),
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+            }
+            .chartYScale(domain: -maxAmplitude...maxAmplitude)
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .frame(height: chartHeight)
+            .padding(.horizontal, horizontalPadding)
+            .animation(.easeOut(duration: 0.1), value: downsampledSamples)
         } else {
             // Chunk mode: original oscilloscope display
             let samples = rawAudioSamples.isEmpty ? magnitudes : rawAudioSamples
@@ -468,6 +501,7 @@ public struct StereoFieldPreset: VisualizerPreset {
         maxMagnitude: Float,
         renderingMode: RenderingMode,
         scrollingData: [[Float]]?,
+        continuousWaveformData: [Float]?,
         isRegularWidth: Bool,
         chartHeight: CGFloat,
         availableWidth: CGFloat,
@@ -596,7 +630,6 @@ public struct StereoFieldPreset: VisualizerPreset {
     }
     
     /// Create stereo field chunk view
-    @ViewBuilder
     private func makeStereoFieldChunkView(
         chartWidth: CGFloat,
         centerX: CGFloat,

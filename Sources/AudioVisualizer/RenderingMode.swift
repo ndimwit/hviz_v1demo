@@ -4,6 +4,7 @@ import Foundation
 public enum RenderingMode: String, CaseIterable, Identifiable {
     case chunk = "chunk"
     case scrolling = "scrolling"
+    case continuous = "continuous"
     
     public var id: String { rawValue }
     
@@ -13,6 +14,8 @@ public enum RenderingMode: String, CaseIterable, Identifiable {
             return "Chunk"
         case .scrolling:
             return "Scrolling (Full)"
+        case .continuous:
+            return "Continuous"
         }
     }
 }

@@ -59,6 +59,21 @@ public struct AudioVisualizerFeature: Reducer {
         /// Timestamp of last scrolling buffer update (not included in Equatable comparison)
         private var lastScrollingUpdateTime: Date?
         
+        /// Continuous waveform buffer for smooth oscilloscope display (for continuous mode)
+        /// Maintains a fixed-size rolling window of samples for phase-continuous display
+        private var continuousWaveformBuffer: [Float] = []
+        
+        /// Maximum number of samples to keep in continuous waveform buffer
+        /// This should be large enough to show multiple cycles of low-frequency signals
+        private let maxContinuousSamples = 8192
+        
+        /// Last seen raw audio samples (tail portion) to detect new samples
+        /// We track the last portion to identify where new samples start
+        private var lastSeenSamples: [Float] = []
+        
+        /// Number of samples to compare for detecting new data (overlap window)
+        private let overlapWindowSize = 512
+        
         /// Current frame rate (FPS) - rounded to 1 decimal place
         public var frameRate: Double = 0.0
         
@@ -220,6 +235,12 @@ public struct AudioVisualizerFeature: Reducer {
             lastScrollingUpdateTime = nil
         }
         
+        /// Clear the continuous waveform buffer
+        mutating func clearContinuousWaveformBuffer() {
+            continuousWaveformBuffer.removeAll()
+            lastSeenSamples.removeAll()
+        }
+        
         /// Reset the scrolling update timer (allows immediate update)
         mutating func resetScrollingUpdateTimer() {
             lastScrollingUpdateTime = nil
@@ -231,6 +252,97 @@ public struct AudioVisualizerFeature: Reducer {
                 return nil
             }
             return scrollingBuffer
+        }
+        
+        /// Update continuous waveform buffer with new samples
+        /// Maintains a rolling window for smooth, phase-continuous waveform display
+        mutating func updateContinuousWaveformBuffer(newSamples: [Float]) {
+            guard renderingMode == .continuous else {
+                // Clear buffer when not in continuous mode
+                if !continuousWaveformBuffer.isEmpty {
+                    continuousWaveformBuffer.removeAll()
+                }
+                lastSeenSamples.removeAll()
+                return
+            }
+            
+            guard !newSamples.isEmpty else {
+                return
+            }
+            
+            // Since rawAudioSamples is a rolling window that appends new samples to the end
+            // and removes old ones from the front, we need to find where new data starts.
+            // We do this by comparing the tail of what we last saw with the beginning of newSamples.
+            
+            if lastSeenSamples.isEmpty {
+                // First time - initialize with all samples
+                continuousWaveformBuffer = newSamples
+                // Store the tail for next comparison
+                let tailSize = min(overlapWindowSize, newSamples.count)
+                lastSeenSamples = Array(newSamples.suffix(tailSize))
+                return
+            }
+            
+            // Find where lastSeenSamples (the tail we saw) appears in the new buffer
+            // This tells us where the overlap ends and new data begins
+            var newDataStartIndex = 0
+            var foundOverlap = false
+            
+            // Search for lastSeenSamples at the beginning of newSamples
+            // The tail we saw should appear somewhere near the start of the new buffer
+            let searchLimit = min(newSamples.count, lastSeenSamples.count + overlapWindowSize)
+            
+            for startIndex in 0..<searchLimit {
+                let remaining = newSamples.count - startIndex
+                if remaining < lastSeenSamples.count {
+                    break
+                }
+                
+                // Compare lastSeenSamples with a slice of newSamples starting at startIndex
+                let slice = Array(newSamples[startIndex..<(startIndex + lastSeenSamples.count)])
+                let matches = zip(lastSeenSamples, slice).allSatisfy { abs($0 - $1) < 0.0001 }
+                
+                if matches {
+                    // Found overlap - new data starts after this match
+                    newDataStartIndex = startIndex + lastSeenSamples.count
+                    foundOverlap = true
+                    break
+                }
+            }
+            
+            // If no overlap found, the buffer might have been reset or changed significantly
+            // In this case, add all samples as new data
+            if !foundOverlap {
+                // Check if buffer was completely replaced (different size or no match)
+                // Add all samples as new
+                newDataStartIndex = 0
+            }
+            
+            // Extract and add only the new samples
+            if newDataStartIndex < newSamples.count {
+                let newSamplesToAdd = Array(newSamples[newDataStartIndex...])
+                if !newSamplesToAdd.isEmpty {
+                    continuousWaveformBuffer.append(contentsOf: newSamplesToAdd)
+                    
+                    // Maintain fixed-size rolling window
+                    if continuousWaveformBuffer.count > maxContinuousSamples {
+                        let samplesToRemove = continuousWaveformBuffer.count - maxContinuousSamples
+                        continuousWaveformBuffer.removeFirst(samplesToRemove)
+                    }
+                }
+            }
+            
+            // Update last seen samples (store tail of new buffer for next comparison)
+            let tailSize = min(overlapWindowSize, newSamples.count)
+            lastSeenSamples = Array(newSamples.suffix(tailSize))
+        }
+        
+        /// Get continuous waveform data (read-only)
+        public var continuousWaveformData: [Float]? {
+            guard renderingMode == .continuous && !continuousWaveformBuffer.isEmpty else {
+                return nil
+            }
+            return continuousWaveformBuffer
         }
         
         /// Update display magnitudes with interpolation/smoothing
@@ -457,6 +569,8 @@ public struct AudioVisualizerFeature: Reducer {
                 state.leftChannelSamples = []
                 state.rightChannelSamples = []
                 state.clearScrollingBuffer()
+                // Clear continuous waveform buffer
+                state.clearContinuousWaveformBuffer()
                 // previousFFTMagnitudes will be reset automatically when updateDisplayMagnitudes is called with empty data
                 state.frameRate = 0.0
                 state.fpsHistory.removeAll()
@@ -482,6 +596,7 @@ public struct AudioVisualizerFeature: Reducer {
             case let .rawSamplesUpdated(samples):
                 state.rawAudioSamples = samples
                 state.updateScrollingBuffer(rawSamples: samples)
+                state.updateContinuousWaveformBuffer(newSamples: samples)
                 return .none
                 
             case let .stereoSamplesUpdated(left, right):
@@ -508,6 +623,8 @@ public struct AudioVisualizerFeature: Reducer {
                 state.renderingMode = mode
                 // Clear scrolling buffer when switching modes
                 state.clearScrollingBuffer()
+                // Clear continuous waveform buffer when switching modes
+                state.clearContinuousWaveformBuffer()
                 return .none
                 
             case let .scrollingRateSelected(rate):
