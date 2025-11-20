@@ -23,7 +23,7 @@ public struct HLSLVisualizerPreset: VisualizerPreset {
         leftChannelSamples: [Float]?,
         rightChannelSamples: [Float]?
     ) -> any View {
-        MetalHistogramView(
+        MetalHistogramViewWithEnvironment(
             magnitudes: magnitudes,
             maxMagnitude: maxMagnitude,
             chartHeight: chartHeight,
@@ -31,7 +31,40 @@ public struct HLSLVisualizerPreset: VisualizerPreset {
             horizontalPadding: horizontalPadding,
             isRegularWidth: isRegularWidth
         )
+        #if targetEnvironment(macCatalyst)
         .frame(height: chartHeight)
+        #else
+        .frame(maxHeight: .infinity)
+        #endif
+    }
+}
+
+/// Wrapper to read environment values and pass them to the view
+private struct MetalHistogramViewWithEnvironment: View {
+    let magnitudes: [Float]
+    let maxMagnitude: Float
+    let chartHeight: CGFloat
+    let availableWidth: CGFloat
+    let horizontalPadding: CGFloat
+    let isRegularWidth: Bool
+    
+    @Environment(\.blurIntensity) var blurIntensity
+    @Environment(\.echoIntensity) var echoIntensity
+    @Environment(\.colorTransformIntensity) var colorTransformIntensity
+    
+    var body: some View {
+        MetalHistogramView(
+            magnitudes: magnitudes,
+            maxMagnitude: maxMagnitude,
+            chartHeight: chartHeight,
+            availableWidth: availableWidth,
+            horizontalPadding: horizontalPadding,
+            isRegularWidth: isRegularWidth,
+            blurIntensity: blurIntensity,
+            echoIntensity: echoIntensity,
+            colorTransformIntensity: colorTransformIntensity
+        )
+        .id("\(blurIntensity)-\(echoIntensity)-\(colorTransformIntensity)")
     }
 }
 
@@ -43,10 +76,31 @@ private struct MetalHistogramView: UIViewRepresentable {
     let availableWidth: CGFloat
     let horizontalPadding: CGFloat
     let isRegularWidth: Bool
+    let blurIntensity: Float
+    let echoIntensity: Float
+    let colorTransformIntensity: Float
     
-    @Environment(\.blurIntensity) var blurIntensity
-    @Environment(\.echoIntensity) var echoIntensity
-    @Environment(\.colorTransformIntensity) var colorTransformIntensity
+    init(
+        magnitudes: [Float],
+        maxMagnitude: Float,
+        chartHeight: CGFloat,
+        availableWidth: CGFloat,
+        horizontalPadding: CGFloat,
+        isRegularWidth: Bool,
+        blurIntensity: Float,
+        echoIntensity: Float,
+        colorTransformIntensity: Float
+    ) {
+        self.magnitudes = magnitudes
+        self.maxMagnitude = maxMagnitude
+        self.chartHeight = chartHeight
+        self.availableWidth = availableWidth
+        self.horizontalPadding = horizontalPadding
+        self.isRegularWidth = isRegularWidth
+        self.blurIntensity = blurIntensity
+        self.echoIntensity = echoIntensity
+        self.colorTransformIntensity = colorTransformIntensity
+    }
     
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView()
@@ -81,6 +135,8 @@ private struct MetalHistogramView: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: MTKView, context: Context) {
+        // Update coordinator values - view is continuously rendering (isPaused = false)
+        // so new values will be picked up on next frame
         context.coordinator.updateData(
             magnitudes: magnitudes,
             maxMagnitude: maxMagnitude,
@@ -167,19 +223,47 @@ private struct MetalHistogramView: UIViewRepresentable {
             struct BarVertexOut {
                 float4 position [[position]];
                 float4 color;
+                float2 screenPos;
             };
             
             vertex BarVertexOut barVertex(constant float4* vertices [[buffer(0)]],
                                          constant float4* colors [[buffer(1)]],
+                                         constant float2& viewportSize [[buffer(2)]],
                                          uint vid [[vertex_id]]) {
                 BarVertexOut out;
                 out.position = vertices[vid];
                 out.color = colors[vid];
+                // Convert NDC to screen coordinates
+                out.screenPos = float2(
+                    (vertices[vid].x + 1.0) * 0.5 * viewportSize.x,
+                    (1.0 - vertices[vid].y) * 0.5 * viewportSize.y
+                );
                 return out;
             }
             
-            fragment float4 barFragment(BarVertexOut in [[stage_in]]) {
-                return in.color;
+            fragment float4 barFragment(BarVertexOut in [[stage_in]],
+                                       constant float2& viewportSize [[buffer(0)]],
+                                       constant float& barTopY [[buffer(1)]]) {
+                // Calculate gradient: inverse color at top of screen, current color at bar tip
+                float screenY = in.screenPos.y;
+                float topOfScreen = viewportSize.y;
+                float barTip = barTopY;
+                
+                // Gradient factor: 0.0 at top of screen, 1.0 at bar tip
+                // Map screenY from [barTip, topOfScreen] to [1.0, 0.0]
+                float gradientFactor = 1.0;
+                if (topOfScreen > barTip && topOfScreen > 0.0) {
+                    // Normalize: screenY at barTip -> 1.0, screenY at topOfScreen -> 0.0
+                    gradientFactor = clamp((topOfScreen - screenY) / (topOfScreen - barTip), 0.0, 1.0);
+                }
+                
+                // Inverse color (1.0 - color)
+                float4 inverseColor = float4(1.0 - in.color.rgb, in.color.a);
+                
+                // Interpolate between inverse color (at top, gradientFactor=0) and current color (at tip, gradientFactor=1)
+                float4 finalColor = mix(inverseColor, in.color, gradientFactor);
+                
+                return finalColor;
             }
             
             // Fragment shader for blur/echo effect with color transformation
@@ -190,6 +274,7 @@ private struct MetalHistogramView: UIViewRepresentable {
                                             constant float& echoIntensity [[buffer(1)]],
                                             constant float& colorTransformIntensity [[buffer(2)]],
                                             constant float2& textureSize [[buffer(3)]],
+                                            constant float& time [[buffer(4)]],
                                             sampler textureSampler [[sampler(0)]]) {
                 float2 uv = in.uv;
                 
@@ -219,14 +304,19 @@ private struct MetalHistogramView: UIViewRepresentable {
                     
                     // Apply accumulated color transformation to feedback (increases over layers)
                     float3 sampleColor = sample.rgb;
+                    float3 originalColor = sampleColor;
                     
                     // Darken (accumulated - stronger for older layers)
                     float darkenAmount = colorTransformIntensity * 0.3;
-                    sampleColor *= (1.0 - darkenAmount);
+                    float3 darkened = sampleColor * (1.0 - darkenAmount);
                     
                     // Invert (accumulated)
                     float3 inverted = 1.0 - sampleColor;
-                    sampleColor = mix(sampleColor, inverted, colorTransformIntensity * 0.4);
+                    
+                    // Apply transform with opacity - mix between original and transformed
+                    float transformOpacity = colorTransformIntensity;
+                    sampleColor = mix(originalColor, darkened, transformOpacity * 0.6);
+                    sampleColor = mix(sampleColor, inverted, transformOpacity * 0.4);
                     
                     // Weight by distance from center (gaussian-like)
                     float weight = 1.0 - abs(offset) / (blurStep * float(blurSamples) * 0.5);
@@ -313,6 +403,7 @@ private struct MetalHistogramView: UIViewRepresentable {
             // Initialize feedback textures (will be resized in draw)
         }
         
+        @discardableResult
         func updateData(
             magnitudes: [Float],
             maxMagnitude: Float,
@@ -323,7 +414,11 @@ private struct MetalHistogramView: UIViewRepresentable {
             blurIntensity: Float,
             echoIntensity: Float,
             colorTransformIntensity: Float
-        ) {
+        ) -> Bool {
+            let valuesChanged = self.blurIntensity != blurIntensity || 
+                               self.echoIntensity != echoIntensity || 
+                               self.colorTransformIntensity != colorTransformIntensity
+            
             self.magnitudes = magnitudes
             self.maxMagnitude = maxMagnitude
             self.chartHeight = chartHeight
@@ -333,6 +428,12 @@ private struct MetalHistogramView: UIViewRepresentable {
             self.blurIntensity = blurIntensity
             self.echoIntensity = echoIntensity
             self.colorTransformIntensity = colorTransformIntensity
+            
+            if valuesChanged {
+                print("HLSL Blur Echo: blur=\(blurIntensity), echo=\(echoIntensity), transform=\(colorTransformIntensity)")
+            }
+            
+            return valuesChanged
         }
         
         func ensureTextures(size: CGSize) {
@@ -430,6 +531,20 @@ private struct MetalHistogramView: UIViewRepresentable {
             
             histogramEncoder.setRenderPipelineState(histogramPipeline)
             
+            // Set viewport size once for all bars
+            var viewportSize = SIMD2<Float>(viewWidth, viewHeight)
+            guard let viewportSizeBuffer = device.makeBuffer(
+                bytes: &viewportSize,
+                length: MemoryLayout<SIMD2<Float>>.stride,
+                options: []
+            ) else {
+                histogramEncoder.endEncoding()
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
+                return
+            }
+            histogramEncoder.setVertexBuffer(viewportSizeBuffer, offset: 0, index: 2)
+            
             for (index, magnitude) in downsampledMagnitudes.enumerated() {
                 let normalizedHeight = CGFloat(magnitude / maxMagnitude)
                 let barHeight = normalizedHeight * chartHeight
@@ -444,7 +559,10 @@ private struct MetalHistogramView: UIViewRepresentable {
                     1.0
                 )
                 
-                // Create rectangle as two triangles
+                // Only render if bar height is greater than 0 (within histogram area)
+                guard barHeight > 0 else { continue }
+                
+                // Create rectangle as two triangles - only within histogram bounds
                 let bottomLeft = toNDC(x: xPos, y: 0)
                 let bottomRight = toNDC(x: xPos + barWidth, y: 0)
                 let topRight = toNDC(x: xPos + barWidth, y: barHeight)
@@ -467,8 +585,18 @@ private struct MetalHistogramView: UIViewRepresentable {
                     options: []
                 ) else { continue }
                 
+                // Pass bar top Y position to fragment shader
+                var barTopY = Float(barHeight)
+                guard let barTopYBuffer = device.makeBuffer(
+                    bytes: &barTopY,
+                    length: MemoryLayout<Float>.stride,
+                    options: []
+                ) else { continue }
+                
                 histogramEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
                 histogramEncoder.setVertexBuffer(colorBuffer, offset: 0, index: 1)
+                histogramEncoder.setFragmentBuffer(viewportSizeBuffer, offset: 0, index: 0)
+                histogramEncoder.setFragmentBuffer(barTopYBuffer, offset: 0, index: 1)
                 histogramEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
             }
             
@@ -501,10 +629,12 @@ private struct MetalHistogramView: UIViewRepresentable {
                 return
             }
             
-            var blurInt = blurIntensity
-            var echoInt = echoIntensity
-            var colorTransformInt = colorTransformIntensity
+            // Use current values from coordinator (these are updated via updateData)
+            var blurInt = self.blurIntensity
+            var echoInt = self.echoIntensity
+            var colorTransformInt = self.colorTransformIntensity
             var textureSize = SIMD2<Float>(Float(drawableSize.width), Float(drawableSize.height))
+            var timeValue = time
             
             blurEchoEncoder.setRenderPipelineState(blurEchoPipeline)
             blurEchoEncoder.setVertexBuffer(quadVertexBuffer, offset: 0, index: 0)
@@ -515,6 +645,7 @@ private struct MetalHistogramView: UIViewRepresentable {
             blurEchoEncoder.setFragmentBytes(&echoInt, length: MemoryLayout<Float>.stride, index: 1)
             blurEchoEncoder.setFragmentBytes(&colorTransformInt, length: MemoryLayout<Float>.stride, index: 2)
             blurEchoEncoder.setFragmentBytes(&textureSize, length: MemoryLayout<SIMD2<Float>>.stride, index: 3)
+            blurEchoEncoder.setFragmentBytes(&timeValue, length: MemoryLayout<Float>.stride, index: 4)
             blurEchoEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             blurEchoEncoder.endEncoding()
             

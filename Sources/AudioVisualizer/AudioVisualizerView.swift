@@ -70,6 +70,7 @@ private enum ControlParameter: String, CaseIterable, Identifiable {
     case rate = "Rate"
     case frames = "Frames"
     case displaceScale = "Displace Scale"
+    case opacity = "Opacity Level"
     case blurIntensity = "Blur Intensity"
     case echoIntensity = "Echo Intensity"
     case colorTransformIntensity = "Color Transform"
@@ -154,6 +155,53 @@ public struct AudioVisualizerView: View {
         return "\(size)"
     }
     
+    /// Get available parameters based on current state
+    private func availableParameters(for viewStore: ViewStoreOf<AudioVisualizerFeature>) -> [ControlParameter] {
+        return ControlParameter.allCases.filter { parameter in
+            switch parameter {
+            case .rate, .frames:
+                return viewStore.renderingMode == .scrolling
+            case .displaceScale:
+                return viewStore.selectedPreset == .mslDisplace
+            case .opacity:
+                return isMSLShaderPreset(viewStore.selectedPreset)
+            case .blurIntensity, .echoIntensity, .colorTransformIntensity:
+                return isBlurEchoPreset(viewStore.selectedPreset)
+            default:
+                return true
+            }
+        }
+    }
+    
+    /// Check if a parameter should be shown
+    private func shouldShowParameter(_ parameter: ControlParameter, in viewStore: ViewStoreOf<AudioVisualizerFeature>) -> Bool {
+        switch parameter {
+        case .rate, .frames:
+            return viewStore.renderingMode == .scrolling
+        case .displaceScale:
+            return viewStore.selectedPreset == .mslDisplace
+        case .opacity:
+            return isMSLShaderPreset(viewStore.selectedPreset)
+        case .blurIntensity, .echoIntensity, .colorTransformIntensity:
+            return isBlurEchoPreset(viewStore.selectedPreset)
+        default:
+            return true
+        }
+    }
+    
+    /// Check if the selected preset is an MSL shader preset
+    private func isMSLShaderPreset(_ preset: VisualizerPresetType) -> Bool {
+        return preset == .mslDisplace ||
+               preset == .mslWaveform ||
+               preset == .mslVisualizer ||
+               preset == .mslTest
+    }
+    
+    /// Check if the selected preset is a blur/echo preset
+    private func isBlurEchoPreset(_ preset: VisualizerPresetType) -> Bool {
+        return preset == .hlslVisualizer || preset == .mslVisualizer
+    }
+    
     public var body: some View {
         GeometryReader { geometry in
             WithViewStore(self.store, observe: { $0 }) { viewStore in
@@ -178,28 +226,7 @@ public struct AudioVisualizerView: View {
                             // First dropdown: Select which parameter to control
                             Picker("Parameter", selection: $selectedParameter) {
                                 ForEach(ControlParameter.allCases) { parameter in
-                                    // Only show Rate and Frames if in scrolling mode
-                                    if parameter == .rate || parameter == .frames {
-                                        if viewStore.renderingMode == .scrolling {
-                                            Text(parameter.displayName)
-                                                .font(isRegularWidth ? .callout : .caption2)
-                                                .tag(parameter)
-                                        }
-                                    } else if parameter == .displaceScale {
-                                        // Only show Displace Scale if MSL Displace preset is selected
-                                        if viewStore.selectedPreset == .mslDisplace {
-                                            Text(parameter.displayName)
-                                                .font(isRegularWidth ? .callout : .caption2)
-                                                .tag(parameter)
-                                        }
-                                    } else if parameter == .blurIntensity || parameter == .echoIntensity || parameter == .colorTransformIntensity {
-                                        // Only show blur/echo controls if HLSL/MSL Blur Echo presets are selected
-                                        if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
-                                            Text(parameter.displayName)
-                                                .font(isRegularWidth ? .callout : .caption2)
-                                                .tag(parameter)
-                                        }
-                                    } else {
+                                    if shouldShowParameter(parameter, in: viewStore) {
                                         Text(parameter.displayName)
                                             .font(isRegularWidth ? .callout : .caption2)
                                             .tag(parameter)
@@ -373,8 +400,27 @@ public struct AudioVisualizerView: View {
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                     
+                                case .opacity:
+                                    if isMSLShaderPreset(viewStore.selectedPreset) {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.mslShaderOpacity) },
+                                                set: { viewStore.send(.mslShaderOpacitySelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 1.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    
                                 case .blurIntensity:
-                                    if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
+                                    if isBlurEchoPreset(viewStore.selectedPreset) {
                                         EndlessNumberSelector(
                                             value: Binding(
                                                 get: { Double(viewStore.blurIntensity) },
@@ -393,7 +439,7 @@ public struct AudioVisualizerView: View {
                                     }
                                     
                                 case .echoIntensity:
-                                    if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
+                                    if isBlurEchoPreset(viewStore.selectedPreset) {
                                         EndlessNumberSelector(
                                             value: Binding(
                                                 get: { Double(viewStore.echoIntensity) },
@@ -412,7 +458,7 @@ public struct AudioVisualizerView: View {
                                     }
                                     
                                 case .colorTransformIntensity:
-                                    if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
+                                    if isBlurEchoPreset(viewStore.selectedPreset) {
                                         EndlessNumberSelector(
                                             value: Binding(
                                                 get: { Double(viewStore.colorTransformIntensity) },
@@ -492,6 +538,12 @@ public struct AudioVisualizerView: View {
                            (selectedParameter == .blurIntensity || selectedParameter == .echoIntensity || selectedParameter == .colorTransformIntensity) {
                             selectedParameter = .preset
                         }
+                        // If preset changed away from MSL shader presets and we're on opacity, switch to preset
+                        if !(newValue == .mslDisplace || newValue == .mslWaveform || 
+                             newValue == .mslVisualizer || newValue == .mslTest) && 
+                           selectedParameter == .opacity {
+                            selectedParameter = .preset
+                        }
                     }
                     
                     // Visualizer preset view
@@ -514,6 +566,7 @@ public struct AudioVisualizerView: View {
                             rightChannelSamples: viewStore.rightChannelSamples.isEmpty ? nil : viewStore.rightChannelSamples
                         )
                         .environment(\.mslDisplaceScale, viewStore.mslDisplaceScale)
+                        .environment(\.mslShaderOpacity, viewStore.mslShaderOpacity)
                         .environment(\.blurIntensity, viewStore.blurIntensity)
                         .environment(\.echoIntensity, viewStore.echoIntensity)
                         .environment(\.colorTransformIntensity, viewStore.colorTransformIntensity)

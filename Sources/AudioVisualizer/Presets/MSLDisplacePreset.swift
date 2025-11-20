@@ -32,7 +32,11 @@ public struct MSLDisplacePreset: VisualizerPreset {
             isRegularWidth: isRegularWidth,
             displacementScale: 0.15 // Default, will be updated via environment
         )
+        #if targetEnvironment(macCatalyst)
         .frame(height: chartHeight)
+        #else
+        .frame(maxHeight: .infinity)
+        #endif
     }
 }
 
@@ -47,9 +51,14 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
     let displacementScale: Float
     
     @Environment(\.mslDisplaceScale) var envDisplacementScale
+    @Environment(\.mslShaderOpacity) var envOpacity
     
     private var effectiveDisplacementScale: Float {
         envDisplacementScale != MSLDisplaceScaleKey.defaultValue ? envDisplacementScale : displacementScale
+    }
+    
+    private var effectiveOpacity: Float {
+        envOpacity
     }
     
     func makeUIView(context: Context) -> MTKView {
@@ -66,7 +75,8 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
         mtkView.enableSetNeedsDisplay = false
         mtkView.isPaused = false
         mtkView.framebufferOnly = false
-        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0) // Transparent background
+        mtkView.isOpaque = false // Allow transparency
         
         context.coordinator.setupMetal(device: device, view: mtkView)
         context.coordinator.updateData(
@@ -76,7 +86,8 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
             availableWidth: availableWidth,
             horizontalPadding: horizontalPadding,
             isRegularWidth: isRegularWidth,
-            displacementScale: effectiveDisplacementScale
+            displacementScale: effectiveDisplacementScale,
+            opacity: effectiveOpacity
         )
         
         return mtkView
@@ -90,7 +101,8 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
             availableWidth: availableWidth,
             horizontalPadding: horizontalPadding,
             isRegularWidth: isRegularWidth,
-            displacementScale: effectiveDisplacementScale
+            displacementScale: effectiveDisplacementScale,
+            opacity: effectiveOpacity
         )
     }
     
@@ -117,6 +129,7 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
         var time: Float = 0.0
         var viewportSize: SIMD2<Float> = SIMD2<Float>(400, 200)
         var displacementScale: Float = 0.15
+        var opacity: Float = 1.0
         
         func setupMetal(device: MTLDevice, view: MTKView) {
             self.device = device
@@ -154,21 +167,11 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
                 vertex VertexOut displaceVertex(
                     device const float4* vertices [[buffer(0)]],
                     device const float2* uvs [[buffer(1)]],
-                    texture2d<float> displacementTexture [[texture(0)]],
-                    constant float2& viewportSize [[buffer(2)]],
-                    constant float& displacementScale [[buffer(3)]],
-                    sampler textureSampler [[sampler(0)]],
                     uint vid [[vertex_id]]
                 ) {
                     VertexOut out;
-                    float4 originalPos = vertices[vid];
-                    float2 uv = uvs[vid];
-                    float displacementValue = displacementTexture.sample(textureSampler, uv).r;
-                    float displacement = (displacementValue - 0.5) * 2.0;
-                    float2 displacementOffset = float2(displacement, displacement) * displacementScale;
-                    float2 ndcDisplacement = displacementOffset * 2.0;
-                    out.position = originalPos + float4(ndcDisplacement.x, ndcDisplacement.y, 0.0, 0.0);
-                    out.uv = uv;
+                    out.position = vertices[vid];
+                    out.uv = uvs[vid];
                     return out;
                 }
                 
@@ -177,19 +180,27 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
                     texture2d<float> displacementTexture [[texture(0)]],
                     constant float& time [[buffer(0)]],
                     constant float2& viewportSize [[buffer(1)]],
+                    constant float& displacementScale [[buffer(2)]],
+                    constant float& opacity [[buffer(3)]],
                     sampler textureSampler [[sampler(0)]]
                 ) {
+                    float2 sampleUV = float2(in.uv.x, 0.5);
+                    float displacementValue = displacementTexture.sample(textureSampler, sampleUV).r;
+                    float displacement = (displacementValue - 0.5) * 2.0;
+                    float2 displacementOffset = float2(0.0, displacement) * displacementScale;
+                    float2 displacedUV = in.uv + displacementOffset;
+                    displacedUV = clamp(displacedUV, 0.0, 1.0);
                     float3 color1 = float3(1.0, 0.2, 0.3);
                     float3 color2 = float3(0.2, 0.3, 1.0);
                     float t = sin(time) * 0.5 + 0.5;
-                    float3 color = mix(color1, color2, in.uv.x + t * 0.3);
-                    float displacementValue = displacementTexture.sample(textureSampler, in.uv).r;
-                    float displacement = (displacementValue - 0.5) * 2.0;
-                    float3 displacementTint = float3(0.1, 0.2, 0.3) * abs(displacement);
-                    color = mix(color, color + displacementTint, 0.3);
-                    float pulse = sin(time * 2.0 + displacement * 5.0) * 0.1 + 0.9;
-                    color *= pulse;
-                    return float4(color, 1.0);
+                    float3 color = mix(color1, color2, displacedUV.x + t * 0.3);
+                    if (abs(displacement) > 0.01) {
+                        color = float3(1.0, 1.0, 1.0) - color;
+                    }
+                    float luminance = dot(color, float3(0.299, 0.587, 0.114));
+                    float alpha = step(0.01, luminance);
+                    alpha *= opacity;
+                    return float4(color, alpha);
                 }
                 
                 kernel void mslGenerateDisplacementMap(
@@ -219,12 +230,12 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
                     }
                     float normalizedMag = magnitude / max(maxMagnitude, 0.001);
                     float displacementValue = 0.5;
-                    float frequencyWave = sin(uv.x * 3.14159 * 8.0 + time * 2.0) * normalizedMag;
-                    displacementValue += frequencyWave * 0.3;
-                    float verticalWave = sin(uv.y * 3.14159 * 4.0 + time * 1.5) * normalizedMag;
-                    displacementValue += verticalWave * 0.2;
-                    float diagonalWave = sin((uv.x + uv.y) * 3.14159 * 6.0 + time * 2.5) * normalizedMag;
-                    displacementValue += diagonalWave * 0.15;
+                    float frequencyPattern = sin(uv.x * 3.14159 * 4.0 + time * 2.0) * normalizedMag;
+                    displacementValue += frequencyPattern * 0.2;
+                    float magnitudePattern = normalizedMag * (1.0 - uv.y) * 0.3;
+                    displacementValue += magnitudePattern;
+                    float timePattern = sin(time * 1.5 + uv.x * 3.14159 * 2.0) * normalizedMag * 0.1;
+                    displacementValue += timePattern;
                     displacementValue = clamp(displacementValue, 0.0, 1.0);
                     displacementTexture.write(float4(displacementValue, displacementValue, displacementValue, 1.0), gid);
                 }
@@ -266,6 +277,15 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
             pipelineDescriptor.vertexFunction = vertexFunc
             pipelineDescriptor.fragmentFunction = fragmentFunc
             pipelineDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+            
+            // Enable alpha blending for transparency
+            pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
+            pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
+            pipelineDescriptor.colorAttachments[0].alphaBlendOperation = .add
+            pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+            pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
             
             do {
                 renderPipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
@@ -312,7 +332,8 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
             availableWidth: CGFloat,
             horizontalPadding: CGFloat,
             isRegularWidth: Bool,
-            displacementScale: Float
+            displacementScale: Float,
+            opacity: Float
         ) {
             self.magnitudes = magnitudes
             self.maxMagnitude = maxMagnitude
@@ -322,6 +343,7 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
             self.isRegularWidth = isRegularWidth
             self.viewportSize = SIMD2<Float>(Float(availableWidth), Float(chartHeight))
             self.displacementScale = displacementScale
+            self.opacity = opacity
         }
         
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -385,6 +407,10 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
             }
             
             // Render with displacement - use full-screen gradient quad
+            // Configure render pass for transparency
+            renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            renderPassDescriptor.colorAttachments[0].loadAction = .clear
+            
             guard let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
                 commandBuffer.present(drawable)
                 commandBuffer.commit()
@@ -437,18 +463,17 @@ private struct MSLDisplaceMetalView: UIViewRepresentable {
             var timeValue = time
             var viewportSize = viewportSize
             var displacementScaleValue = displacementScale
+            var opacityValue = opacity
             
             renderEncoder.setRenderPipelineState(renderPipeline)
             renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
             renderEncoder.setVertexBuffer(uvBuffer, offset: 0, index: 1)
-            renderEncoder.setVertexTexture(displacementTexture, index: 0)
-            renderEncoder.setVertexSamplerState(samplerState, index: 0)
-            renderEncoder.setVertexBytes(&viewportSize, length: MemoryLayout<SIMD2<Float>>.stride, index: 2)
-            renderEncoder.setVertexBytes(&displacementScaleValue, length: MemoryLayout<Float>.stride, index: 3)
             renderEncoder.setFragmentTexture(displacementTexture, index: 0)
             renderEncoder.setFragmentSamplerState(samplerState, index: 0)
             renderEncoder.setFragmentBytes(&timeValue, length: MemoryLayout<Float>.stride, index: 0)
             renderEncoder.setFragmentBytes(&viewportSize, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+            renderEncoder.setFragmentBytes(&displacementScaleValue, length: MemoryLayout<Float>.stride, index: 2)
+            renderEncoder.setFragmentBytes(&opacityValue, length: MemoryLayout<Float>.stride, index: 3)
             
             renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             renderEncoder.endEncoding()

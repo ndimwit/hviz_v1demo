@@ -32,6 +32,7 @@ fragment float4 waveformFragment(
     texture2d<float> waveformTexture [[texture(0)]],
     constant float& time [[buffer(0)]],
     constant float2& viewportSize [[buffer(1)]],
+    constant float& opacity [[buffer(2)]],
     sampler textureSampler [[sampler(0)]]
 ) {
     // Sample the waveform texture
@@ -69,7 +70,15 @@ fragment float4 waveformFragment(
     float pulse = sin(time * 0.5) * 0.05 + 0.95;
     color *= pulse;
     
-    return float4(color, 1.0);
+    // Calculate alpha: make black pixels transparent, apply opacity
+    // Black is defined as very dark colors (RGB all close to 0)
+    float luminance = dot(color, float3(0.299, 0.587, 0.114)); // Standard luminance calculation
+    float alpha = step(0.01, luminance); // 1.0 if not black, 0.0 if black
+    
+    // Apply opacity level to the entire image
+    alpha *= opacity;
+    
+    return float4(color, alpha);
 }
 
 /// Compute shader to generate waveform texture

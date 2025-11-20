@@ -32,7 +32,11 @@ public struct MSLWaveformPreset: VisualizerPreset {
             horizontalPadding: horizontalPadding,
             isRegularWidth: isRegularWidth
         )
+        #if targetEnvironment(macCatalyst)
         .frame(height: chartHeight)
+        #else
+        .frame(maxHeight: .infinity)
+        #endif
     }
 }
 
@@ -44,6 +48,12 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
     let availableWidth: CGFloat
     let horizontalPadding: CGFloat
     let isRegularWidth: Bool
+    
+    @Environment(\.mslShaderOpacity) var envOpacity
+    
+    private var effectiveOpacity: Float {
+        envOpacity
+    }
     
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView()
@@ -59,7 +69,8 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
         mtkView.enableSetNeedsDisplay = false
         mtkView.isPaused = false
         mtkView.framebufferOnly = false
-        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0) // Transparent background
+        mtkView.isOpaque = false // Allow transparency
         
         context.coordinator.setupMetal(device: device, view: mtkView)
         context.coordinator.updateData(
@@ -68,7 +79,8 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             chartHeight: chartHeight,
             availableWidth: availableWidth,
             horizontalPadding: horizontalPadding,
-            isRegularWidth: isRegularWidth
+            isRegularWidth: isRegularWidth,
+            opacity: effectiveOpacity
         )
         
         return mtkView
@@ -81,7 +93,8 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             chartHeight: chartHeight,
             availableWidth: availableWidth,
             horizontalPadding: horizontalPadding,
-            isRegularWidth: isRegularWidth
+            isRegularWidth: isRegularWidth,
+            opacity: effectiveOpacity
         )
     }
     
@@ -111,6 +124,7 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
         var time: Float = 0.0
         var viewportSize: SIMD2<Float> = SIMD2<Float>(400, 200)
         var scrollPosition: Int = 0
+        var opacity: Float = 1.0
         
         func setupMetal(device: MTLDevice, view: MTKView) {
             self.device = device
@@ -161,6 +175,7 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
                     texture2d<float> waveformTexture [[texture(0)]],
                     constant float& time [[buffer(0)]],
                     constant float2& viewportSize [[buffer(1)]],
+                    constant float& opacity [[buffer(2)]],
                     sampler textureSampler [[sampler(0)]]
                 ) {
                     float waveformValue = waveformTexture.sample(textureSampler, in.uv).r;
@@ -181,7 +196,10 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
                     color *= normalized;
                     float pulse = sin(time * 0.5) * 0.05 + 0.95;
                     color *= pulse;
-                    return float4(color, 1.0);
+                    float luminance = dot(color, float3(0.299, 0.587, 0.114));
+                    float alpha = step(0.01, luminance);
+                    alpha *= opacity;
+                    return float4(color, alpha);
                 }
                 
                 kernel void mslGenerateWaveform(
@@ -260,6 +278,15 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             pipelineDescriptor.fragmentFunction = fragmentFunc
             pipelineDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
             
+            // Enable alpha blending for transparency
+            pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
+            pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
+            pipelineDescriptor.colorAttachments[0].alphaBlendOperation = .add
+            pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+            pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            
             do {
                 renderPipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
                 print("✓ MSL Waveform render pipeline created successfully")
@@ -309,7 +336,8 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             chartHeight: CGFloat,
             availableWidth: CGFloat,
             horizontalPadding: CGFloat,
-            isRegularWidth: Bool
+            isRegularWidth: Bool,
+            opacity: Float
         ) {
             self.rawAudioSamples = rawAudioSamples
             self.continuousWaveformData = continuousWaveformData
@@ -318,6 +346,7 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             self.horizontalPadding = horizontalPadding
             self.isRegularWidth = isRegularWidth
             self.viewportSize = SIMD2<Float>(Float(availableWidth), Float(chartHeight))
+            self.opacity = opacity
         }
         
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -407,6 +436,10 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             }
             
             // Render waveform texture
+            // Configure render pass for transparency
+            renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            renderPassDescriptor.colorAttachments[0].loadAction = .clear
+            
             guard let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
                 commandBuffer.present(drawable)
                 commandBuffer.commit()
@@ -458,6 +491,7 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             
             var timeValue = time
             var viewportSize = viewportSize
+            var opacityValue = opacity
             
             renderEncoder.setRenderPipelineState(renderPipeline)
             renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
@@ -466,6 +500,7 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             renderEncoder.setFragmentSamplerState(samplerState, index: 0)
             renderEncoder.setFragmentBytes(&timeValue, length: MemoryLayout<Float>.stride, index: 0)
             renderEncoder.setFragmentBytes(&viewportSize, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+            renderEncoder.setFragmentBytes(&opacityValue, length: MemoryLayout<Float>.stride, index: 2)
             renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             renderEncoder.endEncoding()
             

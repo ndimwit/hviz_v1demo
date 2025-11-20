@@ -103,6 +103,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// Displacement scale for MSL Displace preset (0.0 to 1.0)
         public var mslDisplaceScale: Float = 0.15
         
+        /// Opacity level for MSL shader presets (0.0 to 1.0)
+        public var mslShaderOpacity: Float = 1.0
+        
         /// Blur intensity for HLSL/MSL Blur Echo presets (0.0 to 1.0)
         public var blurIntensity: Float = 0.5
         
@@ -198,6 +201,7 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.fftWindowSize == rhs.fftWindowSize &&
             lhs.fftBandQuantity == rhs.fftBandQuantity &&
             abs(lhs.mslDisplaceScale - rhs.mslDisplaceScale) < 0.001 &&
+            abs(lhs.mslShaderOpacity - rhs.mslShaderOpacity) < 0.001 &&
             abs(lhs.blurIntensity - rhs.blurIntensity) < 0.001 &&
             abs(lhs.echoIntensity - rhs.echoIntensity) < 0.001 &&
             abs(lhs.colorTransformIntensity - rhs.colorTransformIntensity) < 0.001 &&
@@ -716,6 +720,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// MSL Displace scale selection changed
         case mslDisplaceScaleSelected(Float)
         
+        /// MSL shader opacity selection changed
+        case mslShaderOpacitySelected(Float)
+        
         /// Blur intensity selection changed
         case blurIntensitySelected(Float)
         
@@ -987,6 +994,10 @@ public struct AudioVisualizerFeature: Reducer {
                 
             case let .mslDisplaceScaleSelected(newScale):
                 state.mslDisplaceScale = max(0.0, min(1.0, newScale)) // Clamp to [0, 1]
+                return .none
+                
+            case let .mslShaderOpacitySelected(newOpacity):
+                state.mslShaderOpacity = max(0.0, min(1.0, newOpacity)) // Clamp to [0, 1]
                 return .none
                 
             case let .blurIntensitySelected(newIntensity):
