@@ -36,6 +36,16 @@ final class AudioWaveformMonitor {
         audioUnitMonitor.rawAudioSamples
     }
     
+    /// Left channel audio samples for stereo visualization
+    var leftChannelSamples: [Float] {
+        audioUnitMonitor.leftChannelSamples
+    }
+    
+    /// Right channel audio samples for stereo visualization
+    var rightChannelSamples: [Float] {
+        audioUnitMonitor.rightChannelSamples
+    }
+    
     // MARK: - Initialization
     
     private init() {}

@@ -16,6 +16,12 @@ public struct AudioVisualizerFeature: Reducer {
         /// Raw audio samples for time-domain visualization (oscilloscope)
         public var rawAudioSamples: [Float] = []
         
+        /// Left channel audio samples for stereo visualization
+        public var leftChannelSamples: [Float] = []
+        
+        /// Right channel audio samples for stereo visualization
+        public var rightChannelSamples: [Float] = []
+        
         /// Previous FFT magnitudes for interpolation (the starting point for interpolation)
         private var previousFFTMagnitudes: [Float] = []
         
@@ -145,6 +151,8 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.fftMagnitudes == rhs.fftMagnitudes &&
             lhs.displayMagnitudes == rhs.displayMagnitudes &&
             lhs.rawAudioSamples == rhs.rawAudioSamples &&
+            lhs.leftChannelSamples == rhs.leftChannelSamples &&
+            lhs.rightChannelSamples == rhs.rightChannelSamples &&
             lhs.isMonitoring == rhs.isMonitoring &&
             lhs.errorMessage == rhs.errorMessage &&
             lhs.selectedPreset == rhs.selectedPreset &&
@@ -360,6 +368,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// Raw audio samples were updated
         case rawSamplesUpdated([Float])
         
+        /// Stereo channel samples were updated
+        case stereoSamplesUpdated(left: [Float], right: [Float])
+        
         /// An error occurred
         case errorOccurred(String)
         
@@ -443,6 +454,8 @@ public struct AudioVisualizerFeature: Reducer {
                 state.fftMagnitudes = []
                 state.displayMagnitudes = []
                 state.rawAudioSamples = []
+                state.leftChannelSamples = []
+                state.rightChannelSamples = []
                 state.clearScrollingBuffer()
                 // previousFFTMagnitudes will be reset automatically when updateDisplayMagnitudes is called with empty data
                 state.frameRate = 0.0
@@ -469,6 +482,11 @@ public struct AudioVisualizerFeature: Reducer {
             case let .rawSamplesUpdated(samples):
                 state.rawAudioSamples = samples
                 state.updateScrollingBuffer(rawSamples: samples)
+                return .none
+                
+            case let .stereoSamplesUpdated(left, right):
+                state.leftChannelSamples = left
+                state.rightChannelSamples = right
                 return .none
                 
             case let .errorOccurred(message):
@@ -634,8 +652,11 @@ public struct AudioVisualizerFeature: Reducer {
         while await audioMonitor.isMonitoring {
             let magnitudes = await audioMonitor.fftMagnitudes
             let rawSamples = await audioMonitor.rawAudioSamples
+            let leftSamples = await audioMonitor.leftChannelSamples
+            let rightSamples = await audioMonitor.rightChannelSamples
             await send(.magnitudesUpdated(magnitudes))
             await send(.rawSamplesUpdated(rawSamples))
+            await send(.stereoSamplesUpdated(left: leftSamples, right: rightSamples))
             
             // Check for updates at ~60 FPS
             try? await Task.sleep(nanoseconds: 16_666_666) // ~16.67ms = 60 FPS

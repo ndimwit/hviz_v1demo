@@ -259,7 +259,9 @@ public struct AudioVisualizerView: View {
                             isRegularWidth: isRegularWidth,
                             chartHeight: chartHeight(for: geometry),
                             availableWidth: availableWidth,
-                            horizontalPadding: horizontalPadding
+                            horizontalPadding: horizontalPadding,
+                            leftChannelSamples: viewStore.leftChannelSamples.isEmpty ? nil : viewStore.leftChannelSamples,
+                            rightChannelSamples: viewStore.rightChannelSamples.isEmpty ? nil : viewStore.rightChannelSamples
                         )
                     )
                     

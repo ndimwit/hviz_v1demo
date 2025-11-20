@@ -45,6 +45,14 @@ final class AudioUnitMonitor {
     /// Keeps a rolling window of the most recent samples
     @MainActor private(set) var rawAudioSamples: [Float] = []
     
+    /// Store recent left channel audio samples for stereo visualization
+    /// Keeps a rolling window of the most recent samples
+    @MainActor private(set) var leftChannelSamples: [Float] = []
+    
+    /// Store recent right channel audio samples for stereo visualization
+    /// Keeps a rolling window of the most recent samples
+    @MainActor private(set) var rightChannelSamples: [Float] = []
+    
     /// Maximum number of raw samples to keep for visualization
     private let maxRawSamples = 4096
     
@@ -56,6 +64,12 @@ final class AudioUnitMonitor {
     
     /// Buffer for accumulating audio samples
     private var sampleBuffer: [Float] = []
+    
+    /// Buffer for accumulating left channel samples
+    private var leftChannelBuffer: [Float] = []
+    
+    /// Buffer for accumulating right channel samples
+    private var rightChannelBuffer: [Float] = []
     
     /// Lock for thread-safe buffer access
     private let bufferLock = NSLock()
@@ -136,8 +150,8 @@ final class AudioUnitMonitor {
             throw AudioVisualizerError.microphonePermissionDenied
         }
         
-        // Configure audio session - CRITICAL for Mac Catalyst
-        #if targetEnvironment(macCatalyst) || os(macOS)
+        // Configure audio session - CRITICAL for Mac Catalyst (not available on macOS)
+        #if targetEnvironment(macCatalyst)
         print("🎤 [AudioUnit] Configuring audio session...")
         let audioSession = AVAudioSession.sharedInstance()
         do {
@@ -261,12 +275,16 @@ final class AudioUnitMonitor {
         
         bufferLock.lock()
         sampleBuffer.removeAll()
+        leftChannelBuffer.removeAll()
+        rightChannelBuffer.removeAll()
         bufferLock.unlock()
         
         // Reset magnitudes and samples on MainActor
         await MainActor.run {
             fftMagnitudes = [Float](repeating: 0, count: fftBandQuantity)
             rawAudioSamples = []
+            leftChannelSamples = []
+            rightChannelSamples = []
         }
         isMonitoring = false
     }
@@ -651,7 +669,7 @@ final class AudioUnitMonitor {
         #endif
         
         // First, try to get the actual hardware format to see what it provides
-        var propertySize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var formatPropertySize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         var hardwareFormat = AudioStreamBasicDescription()
         
         var status3 = AudioUnitGetProperty(
@@ -660,7 +678,7 @@ final class AudioUnitMonitor {
             kAudioUnitScope_Input,
             1,
             &hardwareFormat,
-            &propertySize
+            &formatPropertySize
         )
         
         if status3 == noErr {
@@ -781,20 +799,27 @@ final class AudioUnitMonitor {
         }
         
         let samples: [Float]
+        let leftChannel: [Float]
+        let rightChannel: [Float]
+        
         if numBuffers > 1 && bufferListPtr[1].mData != nil {
             // Non-interleaved stereo: separate buffers for left and right
-            let leftChannel = Array(UnsafeBufferPointer(start: channelData, count: Int(inNumberFrames)))
-            let rightChannelData = bufferListPtr[1].mData?.assumingMemoryBound(to: Float.self)
+            let leftChannelData = Array(UnsafeBufferPointer(start: channelData, count: Int(inNumberFrames)))
+            let rightChannelDataPtr = bufferListPtr[1].mData?.assumingMemoryBound(to: Float.self)
             
-            if let rightChannelData = rightChannelData {
-                let rightChannel = Array(UnsafeBufferPointer(start: rightChannelData, count: Int(inNumberFrames)))
+            if let rightChannelDataPtr = rightChannelDataPtr {
+                let rightChannelData = Array(UnsafeBufferPointer(start: rightChannelDataPtr, count: Int(inNumberFrames)))
                 
                 // Debug: check if we're actually getting different data in left vs right
                 if processCallbackCount <= 5 {
-                    let leftMax = leftChannel.map { abs($0) }.max() ?? 0
-                    let rightMax = rightChannel.map { abs($0) }.max() ?? 0
+                    let leftMax = leftChannelData.map { abs($0) }.max() ?? 0
+                    let rightMax = rightChannelData.map { abs($0) }.max() ?? 0
                     print("📊 [AudioUnit] Left channel max: \(leftMax), Right channel max: \(rightMax)")
                 }
+                
+                // Store left and right channels separately
+                leftChannel = leftChannelData
+                rightChannel = rightChannelData
                 
                 // Average left and right to create mono
                 samples = zip(leftChannel, rightChannel).map { ($0 + $1) / 2.0 }
@@ -807,28 +832,39 @@ final class AudioUnitMonitor {
                     print("⚠️ [AudioUnit] Right channel data is nil, using left only")
                 }
                 // Fallback to mono (left channel only)
+                leftChannel = leftChannelData
+                rightChannel = leftChannelData // Duplicate left for right when only mono available
                 samples = leftChannel
             }
         } else if channelsPerBuffer == 2 {
             // Interleaved stereo: samples alternate L, R, L, R, ...
             let interleavedCount = Int(inNumberFrames) * 2
             let interleavedSamples = Array(UnsafeBufferPointer(start: channelData, count: interleavedCount))
-            // Extract and average left and right channels
-            var monoResult: [Float] = []
-            monoResult.reserveCapacity(Int(inNumberFrames))
+            // Extract left and right channels separately
+            var leftResult: [Float] = []
+            var rightResult: [Float] = []
+            leftResult.reserveCapacity(Int(inNumberFrames))
+            rightResult.reserveCapacity(Int(inNumberFrames))
             for i in 0..<Int(inNumberFrames) {
                 let left = interleavedSamples[i * 2]
                 let right = interleavedSamples[i * 2 + 1]
-                monoResult.append((left + right) / 2.0)
+                leftResult.append(left)
+                rightResult.append(right)
             }
-            samples = monoResult
+            leftChannel = leftResult
+            rightChannel = rightResult
+            // Average left and right to create mono
+            samples = zip(leftChannel, rightChannel).map { ($0 + $1) / 2.0 }
             
             if processCallbackCount <= 5 {
                 print("📊 [AudioUnit] Converted interleaved stereo to mono: \(samples.count) samples")
             }
         } else {
             // Mono: just copy the samples
-            samples = Array(UnsafeBufferPointer(start: channelData, count: Int(inNumberFrames)))
+            let monoData = Array(UnsafeBufferPointer(start: channelData, count: Int(inNumberFrames)))
+            samples = monoData
+            leftChannel = monoData
+            rightChannel = monoData // Duplicate mono for both channels
             if processCallbackCount <= 5 {
                 print("📊 [AudioUnit] Mono audio: \(samples.count) samples")
             }
@@ -843,6 +879,8 @@ final class AudioUnitMonitor {
         
         bufferLock.lock()
         sampleBuffer.append(contentsOf: samples)
+        leftChannelBuffer.append(contentsOf: leftChannel)
+        rightChannelBuffer.append(contentsOf: rightChannel)
         let currentBufferSize = sampleBuffer.count
         
         // Process when we have enough samples
@@ -851,9 +889,13 @@ final class AudioUnitMonitor {
         if sampleBuffer.count >= fftWindowSize {
             // Take fftWindowSize samples for FFT processing
             let audioData = Array(sampleBuffer.prefix(fftWindowSize))
+            let leftData = Array(leftChannelBuffer.prefix(fftWindowSize))
+            let rightData = Array(rightChannelBuffer.prefix(fftWindowSize))
             // Remove bufferSize samples to maintain rolling window (or all if less)
             let samplesToRemove = min(bufferSize, sampleBuffer.count)
             sampleBuffer.removeFirst(samplesToRemove)
+            leftChannelBuffer.removeFirst(samplesToRemove)
+            rightChannelBuffer.removeFirst(samplesToRemove)
             bufferLock.unlock()
             
             if processCallbackCount <= 10 {
@@ -887,6 +929,17 @@ final class AudioUnitMonitor {
                 self.rawAudioSamples.append(contentsOf: audioData)
                 if self.rawAudioSamples.count > self.maxRawSamples {
                     self.rawAudioSamples.removeFirst(self.rawAudioSamples.count - self.maxRawSamples)
+                }
+                
+                // Store left and right channel samples separately for stereo visualization
+                self.leftChannelSamples.append(contentsOf: leftData)
+                if self.leftChannelSamples.count > self.maxRawSamples {
+                    self.leftChannelSamples.removeFirst(self.leftChannelSamples.count - self.maxRawSamples)
+                }
+                
+                self.rightChannelSamples.append(contentsOf: rightData)
+                if self.rightChannelSamples.count > self.maxRawSamples {
+                    self.rightChannelSamples.removeFirst(self.rightChannelSamples.count - self.maxRawSamples)
                 }
             }
         } else {
