@@ -2,12 +2,28 @@ import SwiftUI
 import Charts
 import ComposableArchitecture
 
+/// Parameter type for the unified control selector
+private enum ControlParameter: String, CaseIterable, Identifiable {
+    case preset = "Preset"
+    case buffer = "Buffer"
+    case window = "Window"
+    case bands = "Bands"
+    case mode = "Mode"
+    case rate = "Rate"
+    case frames = "Frames"
+    
+    var id: String { rawValue }
+    
+    var displayName: String { rawValue }
+}
+
 /// Main view for the Audio Visualizer feature
 public struct AudioVisualizerView: View {
     public let store: StoreOf<AudioVisualizerFeature>
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @State private var selectedParameter: ControlParameter = .preset
     
     public init(store: StoreOf<AudioVisualizerFeature>) {
         self.store = store
@@ -93,158 +109,142 @@ public struct AudioVisualizerView: View {
                             .padding(.top, isRegularWidth ? 20 : 10)
                     }
                     
-                    // Controls row: Preset selector, Buffer size, FFT bands, and Frame rate
+                    // Controls row: Parameter selector, Value selector, and FPS tracking
                     HStack(spacing: isRegularWidth ? 16 : 10) {
-                        // Preset selector
-                        HStack(spacing: 4) {
-                            Text("Preset:")
-                                .font(isRegularWidth ? .body : .caption)
-                                .foregroundColor(.secondary)
-                            
-                            Picker("Visualizer Preset", selection: Binding(
-                                get: { viewStore.selectedPreset },
-                                set: { viewStore.send(.presetSelected($0)) }
-                            )) {
-                                ForEach(VisualizerPresetType.allCases) { preset in
-                                    Text(preset.displayName)
-                                        .tag(preset)
+                        // First dropdown: Select which parameter to control
+                        Picker("Parameter", selection: $selectedParameter) {
+                            ForEach(ControlParameter.allCases) { parameter in
+                                // Only show Rate and Frames if in scrolling mode
+                                if parameter == .rate || parameter == .frames {
+                                    if viewStore.renderingMode == .scrolling {
+                                        Text(parameter.displayName)
+                                            .tag(parameter)
+                                    }
+                                } else {
+                                    Text(parameter.displayName)
+                                        .tag(parameter)
                                 }
                             }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: isRegularWidth ? 180 : 130)
                         }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: isRegularWidth ? 120 : 100)
                         
-                        // Buffer size selector
-                        HStack(spacing: 4) {
-                            Text("Buffer:")
-                                .font(isRegularWidth ? .body : .caption)
-                                .foregroundColor(.secondary)
-                            
-                            Picker("Buffer Size", selection: Binding(
-                                get: { viewStore.bufferSize },
-                                set: { viewStore.send(.bufferSizeSelected($0)) }
-                            )) {
-                                ForEach(Constants.availableBufferSizes, id: \.self) { size in
-                                    Text(formatBufferSize(size))
-                                        .tag(size)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: isRegularWidth ? 100 : 80)
-                        }
-                        
-                        // FFT window size selector
-                        HStack(spacing: 4) {
-                            Text("Window:")
-                                .font(isRegularWidth ? .body : .caption)
-                                .foregroundColor(.secondary)
-                            
-                            Picker("FFT Window Size", selection: Binding(
-                                get: { viewStore.fftWindowSize },
-                                set: { viewStore.send(.fftWindowSizeSelected($0)) }
-                            )) {
-                                ForEach(Constants.availableFFTWindowSizes, id: \.self) { size in
-                                    Text("\(size)")
-                                        .tag(size)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: isRegularWidth ? 100 : 80)
-                        }
-                        
-                        // FFT band quantity selector
-                        HStack(spacing: 4) {
-                            Text("Bands:")
-                                .font(isRegularWidth ? .body : .caption)
-                                .foregroundColor(.secondary)
-                            
-                            Picker("FFT Bands", selection: Binding(
-                                get: { viewStore.fftBandQuantity },
-                                set: { viewStore.send(.fftBandQuantitySelected($0)) }
-                            )) {
-                                ForEach(Constants.availableFFTBandQuantities, id: \.self) { quantity in
-                                    Text("\(quantity)")
-                                        .tag(quantity)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: isRegularWidth ? 100 : 80)
-                        }
-                        
-                        // Rendering mode selector
-                        HStack(spacing: 4) {
-                            Text("Mode:")
-                                .font(isRegularWidth ? .body : .caption)
-                                .foregroundColor(.secondary)
-                            
-                            Picker("Rendering Mode", selection: Binding(
-                                get: { viewStore.renderingMode },
-                                set: { viewStore.send(.renderingModeSelected($0)) }
-                            )) {
-                                ForEach(RenderingMode.allCases) { mode in
-                                    Text(mode.displayName)
-                                        .tag(mode)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: isRegularWidth ? 100 : 80)
-                        }
-                        
-                        // Scrolling rate selector (only visible in scrolling mode)
-                        if viewStore.renderingMode == .scrolling {
-                            HStack(spacing: 4) {
-                                Text("Rate:")
-                                    .font(isRegularWidth ? .body : .caption)
-                                    .foregroundColor(.secondary)
-                                
-                                Picker("Scrolling Rate", selection: Binding(
-                                    get: { viewStore.scrollingRate },
-                                    set: { viewStore.send(.scrollingRateSelected($0)) }
+                        // Second dropdown: Show options for the selected parameter
+                        Group {
+                            switch selectedParameter {
+                            case .preset:
+                                Picker("Visualizer Preset", selection: Binding(
+                                    get: { viewStore.selectedPreset },
+                                    set: { viewStore.send(.presetSelected($0)) }
                                 )) {
-                                    ForEach(Constants.availableScrollingRates, id: \.self) { rate in
-                                        Text("\(Int(rate)) fps")
-                                            .tag(rate)
+                                    ForEach(VisualizerPresetType.allCases) { preset in
+                                        Text(preset.displayName)
+                                            .tag(preset)
                                     }
                                 }
                                 .pickerStyle(.menu)
-                                .frame(maxWidth: isRegularWidth ? 90 : 70)
-                            }
-                            
-                            // Frame limit selector (only visible in scrolling mode)
-                            // For Oscilloscope, use larger frame limits (up to 32k)
-                            // For other presets, use standard frame limits
-                            HStack(spacing: 4) {
-                                Text("Frames:")
-                                    .font(isRegularWidth ? .body : .caption)
-                                    .foregroundColor(.secondary)
                                 
-                                if viewStore.selectedPreset == .oscilloscope {
-                                    Picker("Frame Limit", selection: Binding(
-                                        get: { viewStore.maxScrollingFrames },
-                                        set: { viewStore.send(.maxScrollingFramesSelected($0)) }
+                            case .buffer:
+                                Picker("Buffer Size", selection: Binding(
+                                    get: { viewStore.bufferSize },
+                                    set: { viewStore.send(.bufferSizeSelected($0)) }
+                                )) {
+                                    ForEach(Constants.availableBufferSizes, id: \.self) { size in
+                                        Text(formatBufferSize(size))
+                                            .tag(size)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                
+                            case .window:
+                                Picker("FFT Window Size", selection: Binding(
+                                    get: { viewStore.fftWindowSize },
+                                    set: { viewStore.send(.fftWindowSizeSelected($0)) }
+                                )) {
+                                    ForEach(Constants.availableFFTWindowSizes, id: \.self) { size in
+                                        Text("\(size)")
+                                            .tag(size)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                
+                            case .bands:
+                                Picker("FFT Bands", selection: Binding(
+                                    get: { viewStore.fftBandQuantity },
+                                    set: { viewStore.send(.fftBandQuantitySelected($0)) }
+                                )) {
+                                    ForEach(Constants.availableFFTBandQuantities, id: \.self) { quantity in
+                                        Text("\(quantity)")
+                                            .tag(quantity)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                
+                            case .mode:
+                                Picker("Rendering Mode", selection: Binding(
+                                    get: { viewStore.renderingMode },
+                                    set: { viewStore.send(.renderingModeSelected($0)) }
+                                )) {
+                                    ForEach(RenderingMode.allCases) { mode in
+                                        Text(mode.displayName)
+                                            .tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                
+                            case .rate:
+                                if viewStore.renderingMode == .scrolling {
+                                    Picker("Scrolling Rate", selection: Binding(
+                                        get: { viewStore.scrollingRate },
+                                        set: { viewStore.send(.scrollingRateSelected($0)) }
                                     )) {
-                                        ForEach(Constants.availableOscilloscopeScrollingFrameLimits, id: \.self) { limit in
-                                            Text("\(limit)")
-                                                .tag(limit)
+                                        ForEach(Constants.availableScrollingRates, id: \.self) { rate in
+                                            Text("\(Int(rate)) fps")
+                                                .tag(rate)
                                         }
                                     }
                                     .pickerStyle(.menu)
-                                    .frame(maxWidth: isRegularWidth ? 100 : 80)
                                 } else {
-                                    Picker("Frame Limit", selection: Binding(
-                                        get: { viewStore.maxScrollingFrames },
-                                        set: { viewStore.send(.maxScrollingFramesSelected($0)) }
-                                    )) {
-                                        ForEach(Constants.availableScrollingFrameLimits, id: \.self) { limit in
-                                            Text("\(limit)")
-                                                .tag(limit)
+                                    // Fallback if mode changed away from scrolling
+                                    Text("N/A")
+                                        .foregroundColor(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                
+                            case .frames:
+                                if viewStore.renderingMode == .scrolling {
+                                    if viewStore.selectedPreset == .oscilloscope {
+                                        Picker("Frame Limit", selection: Binding(
+                                            get: { viewStore.maxScrollingFrames },
+                                            set: { viewStore.send(.maxScrollingFramesSelected($0)) }
+                                        )) {
+                                            ForEach(Constants.availableOscilloscopeScrollingFrameLimits, id: \.self) { limit in
+                                                Text("\(limit)")
+                                                    .tag(limit)
+                                            }
                                         }
+                                        .pickerStyle(.menu)
+                                    } else {
+                                        Picker("Frame Limit", selection: Binding(
+                                            get: { viewStore.maxScrollingFrames },
+                                            set: { viewStore.send(.maxScrollingFramesSelected($0)) }
+                                        )) {
+                                            ForEach(Constants.availableScrollingFrameLimits, id: \.self) { limit in
+                                                Text("\(limit)")
+                                                    .tag(limit)
+                                            }
+                                        }
+                                        .pickerStyle(.menu)
                                     }
-                                    .pickerStyle(.menu)
-                                    .frame(maxWidth: isRegularWidth ? 80 : 60)
+                                } else {
+                                    // Fallback if mode changed away from scrolling
+                                    Text("N/A")
+                                        .foregroundColor(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
                         }
+                        .frame(maxWidth: isRegularWidth ? 180 : 140)
                         
                         Spacer()
                         
@@ -287,6 +287,12 @@ public struct AudioVisualizerView: View {
                     }
                     .padding(.horizontal, horizontalPadding)
                     .padding(.top, isRegularWidth ? 10 : 5)
+                    .onChange(of: viewStore.renderingMode) { oldValue, newValue in
+                        // If mode changed away from scrolling and we're on rate/frames, switch to preset
+                        if newValue != .scrolling && (selectedParameter == .rate || selectedParameter == .frames) {
+                            selectedParameter = .preset
+                        }
+                    }
                     
                     // Visualizer preset view
                     let preset = viewStore.selectedPreset.preset
