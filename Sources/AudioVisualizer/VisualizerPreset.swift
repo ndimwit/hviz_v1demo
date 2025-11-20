@@ -518,12 +518,6 @@ public struct StereoFieldPreset: VisualizerPreset {
                 let frameWidth = chartWidth / CGFloat(max(scrollingFrames.count, 1))
                 
                 ZStack {
-                    // Center line
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.3))
-                        .frame(width: 1)
-                        .position(x: centerX + horizontalPadding, y: centerY)
-                    
                     HStack(spacing: 0) {
                         ForEach(scrollingFrames.indices, id: \.self) { frameIndex in
                             let frame = scrollingFrames[frameIndex]
