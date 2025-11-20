@@ -97,9 +97,6 @@ public struct AudioVisualizerFeature: Reducer {
         /// FFT window size (must be power of 2, starting from 8)
         public var fftWindowSize: Int = Constants.defaultFFTWindowSize
         
-        /// Whether to include the +1 band (Nyquist frequency bin)
-        public var includeNyquistBand: Bool = false
-        
         /// Number of FFT bands to display
         public var fftBandQuantity: Int = Constants.defaultFFTBandQuantity
         
@@ -166,7 +163,6 @@ public struct AudioVisualizerFeature: Reducer {
             self.lastUpdateTime = lastUpdateTime
             self.bufferSize = bufferSize
             self.fftWindowSize = Constants.defaultFFTWindowSize
-            self.includeNyquistBand = false
             // Use provided band quantity or calculate appropriate one for the default FFT window size
             self.fftBandQuantity = fftBandQuantity ?? Constants.calculateAppropriateFFTBandQuantity(for: Constants.defaultFFTWindowSize, includeNyquist: false)
             self.scrollingRate = Constants.defaultScrollingRate
@@ -188,7 +184,6 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.maxScrollingFrames == rhs.maxScrollingFrames &&
             lhs.bufferSize == rhs.bufferSize &&
             lhs.fftWindowSize == rhs.fftWindowSize &&
-            lhs.includeNyquistBand == rhs.includeNyquistBand &&
             lhs.fftBandQuantity == rhs.fftBandQuantity &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
         }
@@ -701,9 +696,6 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// FFT band quantity selection changed
         case fftBandQuantitySelected(Int)
-        
-        /// Include Nyquist band toggle changed
-        case includeNyquistBandToggled(Bool)
     }
     
     // MARK: - Dependencies
@@ -909,7 +901,7 @@ public struct AudioVisualizerFeature: Reducer {
                 state.fftWindowSize = newWindowSize
                 
                 // Auto-select appropriate FFT band quantity for the new window size
-                let appropriateBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: newWindowSize, includeNyquist: state.includeNyquistBand)
+                let appropriateBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: newWindowSize, includeNyquist: false)
                 state.fftBandQuantity = appropriateBandQuantity
                 
                 // Clear magnitude buffers and interpolation state to prevent mirroring from stale data
@@ -965,48 +957,6 @@ public struct AudioVisualizerFeature: Reducer {
                     return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = newBandQuantity] send in
                         do {
                             // Stop and restart with new FFT band quantity
-                            await audioMonitor.stopMonitoring()
-                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
-                            await send(.monitoringStarted)
-                            
-                            // Start observing magnitude updates
-                            await observeMagnitudes(audioMonitor: audioMonitor, send: send)
-                        } catch {
-                            await send(.errorOccurred(error.localizedDescription))
-                        }
-                    }
-                }
-                
-                return .none
-                
-            case let .includeNyquistBandToggled(includeNyquist):
-                // Only change if different
-                guard includeNyquist != state.includeNyquistBand else {
-                    return .none
-                }
-                
-                let wasMonitoring = state.isMonitoring
-                state.includeNyquistBand = includeNyquist
-                
-                // Recalculate FFT band quantity with new Nyquist setting
-                let appropriateBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: state.fftWindowSize, includeNyquist: includeNyquist)
-                print("🔄 [AudioVisualizer] Nyquist toggle changed: includeNyquist=\(includeNyquist), windowSize=\(state.fftWindowSize), newBandQuantity=\(appropriateBandQuantity)")
-                state.fftBandQuantity = appropriateBandQuantity
-                
-                // Clear magnitude buffers and interpolation state when Nyquist setting changes
-                state.fftMagnitudes = []
-                state.displayMagnitudes = []
-                state.updateDisplayMagnitudes() // This will reset interpolation state
-                state.clearScrollingBuffer()
-                
-                // If monitoring, restart with new band quantity
-                if wasMonitoring {
-                    // Set monitoring to false temporarily to reflect the stop
-                    state.isMonitoring = false
-                    
-                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = appropriateBandQuantity] send in
-                        do {
-                            // Stop and restart with new band quantity
                             await audioMonitor.stopMonitoring()
                             try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)

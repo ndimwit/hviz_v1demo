@@ -171,17 +171,6 @@ public struct AudioVisualizerView: View {
                             .frame(maxWidth: isRegularWidth ? 100 : 80)
                         }
                         
-                        // Include Nyquist band toggle
-                        HStack(spacing: 4) {
-                            Toggle("+1", isOn: Binding(
-                                get: { viewStore.includeNyquistBand },
-                                set: { viewStore.send(.includeNyquistBandToggled($0)) }
-                            ))
-                            .toggleStyle(.switch)
-                            .labelsHidden()
-                            .help("Include Nyquist frequency band (+1)")
-                        }
-                        
                         // Rendering mode selector
                         HStack(spacing: 4) {
                             Text("Mode:")
