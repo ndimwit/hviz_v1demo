@@ -29,11 +29,37 @@ final class AudioUnitMonitor {
     private var bufferSize: Int = Constants.defaultBufferSize
     
     /// FFT window size (must be power of 2, starting from 8)
-    private var fftWindowSize: Int = Constants.defaultFFTWindowSize
+    /// Thread-safe access via monitoringLock
+    private var _fftWindowSize: Int = Constants.defaultFFTWindowSize
+    private var fftWindowSize: Int {
+        get {
+            monitoringLock.lock()
+            defer { monitoringLock.unlock() }
+            return _fftWindowSize
+        }
+        set {
+            monitoringLock.lock()
+            defer { monitoringLock.unlock() }
+            _fftWindowSize = newValue
+        }
+    }
     
     /// Number of FFT bands to display
     /// Initialized to appropriate value for default window size to avoid mirroring
-    private var fftBandQuantity: Int = Constants.calculateAppropriateFFTBandQuantity(for: Constants.defaultFFTWindowSize, includeNyquist: false)
+    /// Thread-safe access via monitoringLock
+    private var _fftBandQuantity: Int = Constants.calculateAppropriateFFTBandQuantity(for: Constants.defaultFFTWindowSize, includeNyquist: false)
+    private var fftBandQuantity: Int {
+        get {
+            monitoringLock.lock()
+            defer { monitoringLock.unlock() }
+            return _fftBandQuantity
+        }
+        set {
+            monitoringLock.lock()
+            defer { monitoringLock.unlock() }
+            _fftBandQuantity = newValue
+        }
+    }
     
     /// FFT configuration setup
     private var fftSetup: OpaquePointer?
@@ -56,8 +82,6 @@ final class AudioUnitMonitor {
     /// Maximum number of raw samples to keep for visualization
     private let maxRawSamples = 4096
     
-    /// Track if audio monitoring is running
-    var isMonitoring = false
     
     /// Audio format description
     private var audioFormat: AudioStreamBasicDescription?
@@ -73,6 +97,27 @@ final class AudioUnitMonitor {
     
     /// Lock for thread-safe buffer access
     private let bufferLock = NSLock()
+    
+    /// Lock for thread-safe FFT setup access
+    private let fftSetupLock = NSLock()
+    
+    /// Lock for thread-safe monitoring state access
+    private let monitoringLock = NSLock()
+    
+    /// Track if audio monitoring is running (thread-safe access)
+    private var _isMonitoring = false
+    var isMonitoring: Bool {
+        get {
+            monitoringLock.lock()
+            defer { monitoringLock.unlock() }
+            return _isMonitoring
+        }
+        set {
+            monitoringLock.lock()
+            defer { monitoringLock.unlock() }
+            _isMonitoring = newValue
+        }
+    }
     
     /// Counter for render callback invocations (for debugging)
     private var callbackInvocationCount: Int = 0
@@ -121,19 +166,24 @@ final class AudioUnitMonitor {
         
         // If band quantity is provided, calculate window size from it (4x relationship for better resolution)
         // Otherwise, use the provided window size and calculate band quantity from it
+        // Update these atomically while holding the lock
+        monitoringLock.lock()
         if let requestedBandQuantity = fftBandQuantity {
             // Calculate window size from band quantity (4x for better frequency resolution)
-            self.fftWindowSize = Constants.calculateFFTWindowSize(for: requestedBandQuantity)
-            self.fftBandQuantity = requestedBandQuantity
+            _fftWindowSize = Constants.calculateFFTWindowSize(for: requestedBandQuantity)
+            _fftBandQuantity = requestedBandQuantity
         } else {
             // Use provided window size and calculate appropriate band quantity
-            self.fftWindowSize = fftWindowSize
-            self.fftBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: fftWindowSize, includeNyquist: false)
+            _fftWindowSize = fftWindowSize
+            _fftBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: fftWindowSize, includeNyquist: false)
         }
+        let finalWindowSize = _fftWindowSize
+        let finalBandQuantity = _fftBandQuantity
+        monitoringLock.unlock()
         
         // Initialize magnitudes array with correct size
         await MainActor.run {
-            fftMagnitudes = [Float](repeating: 0, count: self.fftBandQuantity)
+            fftMagnitudes = [Float](repeating: 0, count: finalBandQuantity)
         }
         print("🚀 [AudioUnit] startMonitoring() called")
         guard !isMonitoring else {
@@ -201,13 +251,20 @@ final class AudioUnitMonitor {
         // Safety check: Ensure band quantity doesn't exceed the maximum unique bins (N/2+1) to avoid mirroring
         // With the new 4x relationship (windowSize = 4 * bandQuantity), this should never trigger,
         // but we keep it as a safety measure in case window size is manually set too small
-        let maxUniqueBands = self.fftWindowSize / 2 + 1
-        if self.fftBandQuantity > maxUniqueBands {
-            print("⚠️ [AudioUnit] Band quantity \(self.fftBandQuantity) exceeds maximum unique bins \(maxUniqueBands) for window size \(self.fftWindowSize). Limiting to \(maxUniqueBands) to avoid mirroring.")
-            self.fftBandQuantity = maxUniqueBands
+        let maxUniqueBands = finalWindowSize / 2 + 1
+        let adjustedBandQuantity: Int
+        if finalBandQuantity > maxUniqueBands {
+            print("⚠️ [AudioUnit] Band quantity \(finalBandQuantity) exceeds maximum unique bins \(maxUniqueBands) for window size \(finalWindowSize). Limiting to \(maxUniqueBands) to avoid mirroring.")
+            adjustedBandQuantity = maxUniqueBands
+            monitoringLock.lock()
+            _fftBandQuantity = adjustedBandQuantity
+            monitoringLock.unlock()
+        } else {
+            adjustedBandQuantity = finalBandQuantity
         }
         
-        // Destroy old FFT setup if it exists
+        // Destroy old FFT setup if it exists (with lock protection)
+        fftSetupLock.lock()
         if let oldSetup = fftSetup {
             vDSP_DFT_DestroySetup(oldSetup)
             fftSetup = nil
@@ -215,10 +272,12 @@ final class AudioUnitMonitor {
         
         // Create DFT setup following the tutorial approach
         // vDSP_DFT_zrop_CreateSetup creates a setup for real-to-complex Discrete Fourier Transform
-        fftSetup = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(fftWindowSize), vDSP_DFT_Direction.FORWARD)
+        fftSetup = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(finalWindowSize), vDSP_DFT_Direction.FORWARD)
+        let newSetup = fftSetup
+        fftSetupLock.unlock()
         
-        guard fftSetup != nil else {
-            print("❌ [AudioUnit] Failed to create DFT setup with window size: \(fftWindowSize), band quantity: \(fftBandQuantity)")
+        guard newSetup != nil else {
+            print("❌ [AudioUnit] Failed to create DFT setup with window size: \(finalWindowSize), band quantity: \(adjustedBandQuantity)")
             throw AudioVisualizerError.fftSetupFailed
         }
         
@@ -259,8 +318,12 @@ final class AudioUnitMonitor {
     
     /// Stop monitoring audio input
     func stopMonitoring() async {
+        // Set monitoring to false FIRST so any running Tasks will see it
+        // This must happen before stopping audio unit to prevent new Tasks from starting
         guard isMonitoring else { return }
+        isMonitoring = false
         
+        // Stop audio unit
         if let audioUnit = audioUnit {
             AudioOutputUnitStop(audioUnit)
             AudioUnitUninitialize(audioUnit)
@@ -268,11 +331,15 @@ final class AudioUnitMonitor {
             self.audioUnit = nil
         }
         
+        // Destroy FFT setup with lock protection to prevent use-after-free
+        fftSetupLock.lock()
         if let setup = fftSetup {
             vDSP_DFT_DestroySetup(setup)
             self.fftSetup = nil
         }
+        fftSetupLock.unlock()
         
+        // Clear buffers
         bufferLock.lock()
         sampleBuffer.removeAll()
         leftChannelBuffer.removeAll()
@@ -280,13 +347,15 @@ final class AudioUnitMonitor {
         bufferLock.unlock()
         
         // Reset magnitudes and samples on MainActor
+        // Wait a bit to allow any in-flight Tasks to complete their checks
+        let currentBandQuantity = self.fftBandQuantity
+        try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
         await MainActor.run {
-            fftMagnitudes = [Float](repeating: 0, count: fftBandQuantity)
+            fftMagnitudes = [Float](repeating: 0, count: currentBandQuantity)
             rawAudioSamples = []
             leftChannelSamples = []
             rightChannelSamples = []
         }
-        isMonitoring = false
     }
     
     /// Change the buffer size, stopping and restarting monitoring if needed
@@ -335,9 +404,11 @@ final class AudioUnitMonitor {
         if wasMonitoring {
             try await startMonitoring(bufferSize: currentBufferSize, fftWindowSize: Constants.defaultFFTWindowSize, fftBandQuantity: newBandQuantity)
         } else {
-            // Calculate window size from band quantity and update both
-            self.fftBandQuantity = newBandQuantity
-            self.fftWindowSize = Constants.calculateFFTWindowSize(for: newBandQuantity)
+            // Calculate window size from band quantity and update both atomically
+            monitoringLock.lock()
+            _fftBandQuantity = newBandQuantity
+            _fftWindowSize = Constants.calculateFFTWindowSize(for: newBandQuantity)
+            monitoringLock.unlock()
             await MainActor.run {
                 fftMagnitudes = [Float](repeating: 0, count: newBandQuantity)
             }
@@ -904,13 +975,47 @@ final class AudioUnitMonitor {
                 #endif
             }
             
+            // Capture current monitoring state and FFT parameters before creating Task
+            // This prevents using stale values if monitoring stops during FFT
+            // Capture these values while we know monitoring is active
+            let currentIsMonitoring = self.isMonitoring
+            guard currentIsMonitoring else {
+                // Already unlocked bufferLock above, just return
+                return
+            }
+            
+            // Capture FFT parameters while monitoring is active
+            let currentWindowSize = self.fftWindowSize
+            let currentBandQuantity = self.fftBandQuantity
+            
+            // Make explicit copies of the arrays to ensure they're not affected by buffer clearing
+            // These are already copies from Array(...), but being explicit about it
+            let audioDataCopy = audioData
+            let leftDataCopy = leftData
+            let rightDataCopy = rightData
+            
             // Perform FFT asynchronously and update on main actor
             Task { @MainActor in
+                // Check if monitoring is still active before performing FFT
+                guard currentIsMonitoring && self.isMonitoring else {
+                    return
+                }
+                
                 do {
-                    let magnitudes = await self.performFFT(data: audioData)
+                    let magnitudes = await self.performFFT(data: audioDataCopy, windowSize: currentWindowSize, bandQuantity: currentBandQuantity)
+                    
+                    // Check again after FFT completes (it might have taken a while)
+                    guard self.isMonitoring else {
+                        return
+                    }
+                    
                     if magnitudes.isEmpty {
                         print("⚠️ [AudioUnit] FFT returned empty magnitudes array")
                     } else {
+                        // Final check before updating results
+                        guard self.isMonitoring else {
+                            return
+                        }
                         self.fftMagnitudes = magnitudes
                         
                         if processCallbackCount <= 10 {
@@ -921,23 +1026,32 @@ final class AudioUnitMonitor {
                         }
                     }
                 } catch {
-                    print("❌ [AudioUnit] FFT error: \(error)")
+                    // Only log if still monitoring (avoid spam during shutdown)
+                    if self.isMonitoring {
+                        print("❌ [AudioUnit] FFT error: \(error)")
+                    }
+                    return
+                }
+                
+                // Final check before updating samples
+                guard self.isMonitoring else {
+                    return
                 }
                 
                 // Store raw audio samples for time-domain visualization
                 // Keep a rolling window of recent samples
-                self.rawAudioSamples.append(contentsOf: audioData)
+                self.rawAudioSamples.append(contentsOf: audioDataCopy)
                 if self.rawAudioSamples.count > self.maxRawSamples {
                     self.rawAudioSamples.removeFirst(self.rawAudioSamples.count - self.maxRawSamples)
                 }
                 
                 // Store left and right channel samples separately for stereo visualization
-                self.leftChannelSamples.append(contentsOf: leftData)
+                self.leftChannelSamples.append(contentsOf: leftDataCopy)
                 if self.leftChannelSamples.count > self.maxRawSamples {
                     self.leftChannelSamples.removeFirst(self.leftChannelSamples.count - self.maxRawSamples)
                 }
                 
-                self.rightChannelSamples.append(contentsOf: rightData)
+                self.rightChannelSamples.append(contentsOf: rightDataCopy)
                 if self.rightChannelSamples.count > self.maxRawSamples {
                     self.rightChannelSamples.removeFirst(self.rightChannelSamples.count - self.maxRawSamples)
                 }
@@ -983,33 +1097,43 @@ final class AudioUnitMonitor {
     
     /// Perform Fast Fourier Transform on audio data
     /// Uses vDSP_DFT_Execute following the tutorial approach
-    private func performFFT(data: [Float]) async -> [Float] {
-        guard data.count >= fftWindowSize else {
-            print("⚠️ [FFT] Not enough data: \(data.count) < \(fftWindowSize)")
-            return [Float](repeating: 0, count: fftBandQuantity)
+    /// - Parameters:
+    ///   - data: Audio samples to transform
+    ///   - windowSize: FFT window size (captured at call time to avoid stale values)
+    ///   - bandQuantity: Number of bands to return (captured at call time to avoid stale values)
+    private func performFFT(data: [Float], windowSize: Int, bandQuantity: Int) async -> [Float] {
+        guard data.count >= windowSize else {
+            print("⚠️ [FFT] Not enough data: \(data.count) < \(windowSize)")
+            return [Float](repeating: 0, count: bandQuantity)
         }
         
-        guard let fftSetup = fftSetup else {
-            print("⚠️ [FFT] FFT setup is nil")
-            return [Float](repeating: 0, count: fftBandQuantity)
-        }
+        // Capture FFT setup with lock protection to prevent use-after-free
+        fftSetupLock.lock()
+        defer { fftSetupLock.unlock() } // Always unlock, even on early return or error
         
-        // Prepare input data (use first fftWindowSize samples)
-        var inputData = Array(data.prefix(fftWindowSize))
+        guard let fftSetup = fftSetup, isMonitoring else {
+            print("⚠️ [FFT] FFT setup is nil or monitoring stopped")
+            return [Float](repeating: 0, count: bandQuantity)
+        }
+        // Keep the lock during FFT execution to prevent setup destruction
+        // The defer will unlock after we're done using the setup
+        
+        // Prepare input data (use first windowSize samples)
+        var inputData = Array(data.prefix(windowSize))
         
         #if VERBOSE_FFT_DEBUG
         if processCallbackCount <= 3 {
-            print("🔍 [FFT Debug] Input data size: \(inputData.count), fftWindowSize: \(fftWindowSize)")
-            print("🔍 [FFT Debug] FFT setup was created with window size: \(fftWindowSize)")
+            print("🔍 [FFT Debug] Input data size: \(inputData.count), windowSize: \(windowSize)")
+            print("🔍 [FFT Debug] FFT setup was created with window size: \(windowSize)")
             print("🔍 [FFT Debug] Input data range: min=\(inputData.min() ?? 0), max=\(inputData.max() ?? 0), RMS=\(sqrt(inputData.map { $0 * $0 }.reduce(0, +) / Float(inputData.count)))")
         }
         #endif
         
         // Apply windowing function to reduce spectral leakage
         // Using Hann window for better frequency resolution
-        var window = [Float](repeating: 0, count: fftWindowSize)
-        vDSP_hann_window(&window, vDSP_Length(fftWindowSize), Int32(vDSP_HANN_NORM))
-        vDSP_vmul(inputData, 1, window, 1, &inputData, 1, vDSP_Length(fftWindowSize))
+        var window = [Float](repeating: 0, count: windowSize)
+        vDSP_hann_window(&window, vDSP_Length(windowSize), Int32(vDSP_HANN_NORM))
+        vDSP_vmul(inputData, 1, window, 1, &inputData, 1, vDSP_Length(windowSize))
         
         // Following Apple's vDSP documentation for real-to-complex DFT:
         // vDSP_DFT_Execute outputs the full N-point complex result (N real + N imaginary values)
@@ -1026,19 +1150,19 @@ final class AudioUnitMonitor {
         // However, if includeNyquist is false, we use N/2 bins (excluding Nyquist at bin N/2)
         // CRITICAL: We must extract bins 0 to N/2, NOT 0 to N/2-1, to avoid including mirrored data
         let maxUniqueBins = fftWindowSize / 2 + 1  // N/2+1 includes DC to Nyquist
-        // CRITICAL FIX: Always extract ALL unique bins (N/2), then limit to fftBandQuantity later
+        // CRITICAL FIX: Always extract ALL unique bins (N/2), then limit to bandQuantity later
         // Previously we were limiting here, which caused us to lose half the frequency data
-        let fftOutputSize = fftWindowSize / 2  // Always extract all unique bins (excluding Nyquist)
+        let fftOutputSize = windowSize / 2  // Always extract all unique bins (excluding Nyquist)
         
-        var realOut = [Float](repeating: 0, count: fftWindowSize)
-        var imagOut = [Float](repeating: 0, count: fftWindowSize)
-        var inputImag = [Float](repeating: 0, count: fftWindowSize) // Zero for real input
+        var realOut = [Float](repeating: 0, count: windowSize)
+        var imagOut = [Float](repeating: 0, count: windowSize)
+        var inputImag = [Float](repeating: 0, count: windowSize) // Zero for real input
         var magnitudes = [Float](repeating: 0, count: fftOutputSize)
         
         #if VERBOSE_FFT_DEBUG
         if processCallbackCount <= 3 {
             print("🔍 [FFT Debug] Output arrays: realOut.count=\(realOut.count), imagOut.count=\(imagOut.count), inputImag.count=\(inputImag.count)")
-            print("🔍 [FFT Debug] Expected output size: \(fftWindowSize), fftOutputSize (extracted): \(fftOutputSize)")
+            print("🔍 [FFT Debug] Expected output size: \(windowSize), fftOutputSize (extracted): \(fftOutputSize)")
         }
         #endif
         
@@ -1060,11 +1184,11 @@ final class AudioUnitMonitor {
                         #if VERBOSE_FFT_DEBUG
                         if processCallbackCount <= 3 {
                             print("🔍 [FFT Debug] Raw DFT output (first 10 real/imag pairs):")
-                            for i in 0..<min(10, fftWindowSize) {
+                            for i in 0..<min(10, windowSize) {
                                 print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
                             }
                             print("🔍 [FFT Debug] Raw DFT output (last 10 real/imag pairs):")
-                            for i in max(0, fftWindowSize - 10)..<fftWindowSize {
+                            for i in max(0, windowSize - 10)..<windowSize {
                                 print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
                             }
                         }
@@ -1078,30 +1202,30 @@ final class AudioUnitMonitor {
                         )
                         
                         // Compute magnitudes for all N bins to verify mirroring
-                        var allMagnitudes = [Float](repeating: 0, count: fftWindowSize)
+                        var allMagnitudes = [Float](repeating: 0, count: windowSize)
                         allMagnitudes.withUnsafeMutableBufferPointer { allMagPtr in
-                            vDSP_zvabs(&complex, 1, allMagPtr.baseAddress!, 1, vDSP_Length(fftWindowSize))
+                            vDSP_zvabs(&complex, 1, allMagPtr.baseAddress!, 1, vDSP_Length(windowSize))
                             
                             #if VERBOSE_FFT_DEBUG
                             if processCallbackCount <= 3 {
-                                print("🔍 [FFT Debug] Computed magnitudes for \(fftWindowSize) bins")
+                                print("🔍 [FFT Debug] Computed magnitudes for \(windowSize) bins")
                                 print("🔍 [FFT Debug] First 5 magnitudes: \(Array(allMagPtr.prefix(5)))")
-                                print("🔍 [FFT Debug] Last 5 magnitudes: \(Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!.advanced(by: fftWindowSize - 5), count: 5)))")
+                                print("🔍 [FFT Debug] Last 5 magnitudes: \(Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!.advanced(by: windowSize - 5), count: 5)))")
                             }
                             #endif
                             
                             // Debug: Save ALL magnitudes from the full DFT output to file
                             #if VERBOSE_FFT_DEBUG
                             if processCallbackCount <= 3 {
-                                let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
-                                saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                                let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: windowSize))
+                                saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: windowSize)
                                 
                                 // Check for mirroring: compare bin k with bin N-k
                                 // For real input, bins k and N-k should have the same magnitude (conjugate symmetry)
                                 print("🔍 [FFT Debug] Mirroring check (comparing bin k with bin N-k):")
                                 var mirroringIssues = 0
-                                for k in 1..<min(50, fftWindowSize / 2) {
-                                    let mirrorIdx = fftWindowSize - k
+                                for k in 1..<min(50, windowSize / 2) {
+                                    let mirrorIdx = windowSize - k
                                     let diff = abs(allMagPtr[k] - allMagPtr[mirrorIdx])
                                     if diff > 0.001 {  // Only print if there's a significant difference
                                         print("   ⚠️ bin[\(k)]=\(String(format: "%.4f", allMagPtr[k])) vs bin[\(mirrorIdx)]=\(String(format: "%.4f", allMagPtr[mirrorIdx])): diff=\(String(format: "%.4f", diff))")
@@ -1115,8 +1239,8 @@ final class AudioUnitMonitor {
                             #else
                             // Save files even when verbose logging is disabled (less intrusive than console spam)
                             if processCallbackCount <= 3 {
-                                let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
-                                saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                                let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: windowSize))
+                                saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: windowSize)
                             }
                             #endif
                             
@@ -1135,9 +1259,9 @@ final class AudioUnitMonitor {
                                     // This ensures we never include bins >= N/2 which would be mirrored data
                                     guard i < allMagPtr.count && i < magnitudesPtr.count else { break }
                                     // Double-check we're not extracting mirrored bins
-                                    guard i < fftWindowSize / 2 else {
+                                    guard i < windowSize / 2 else {
                                         #if VERBOSE_FFT_DEBUG
-                                        print("⚠️ [FFT] Attempted to extract bin \(i) which is >= N/2 (\(fftWindowSize/2)), skipping to avoid mirroring")
+                                        print("⚠️ [FFT] Attempted to extract bin \(i) which is >= N/2 (\(windowSize/2)), skipping to avoid mirroring")
                                         #endif
                                         break
                                     }
@@ -1147,7 +1271,7 @@ final class AudioUnitMonitor {
                                 // Debug: Save the extracted magnitudes array to file
                                 if processCallbackCount <= 3 {
                                     let extractedArray = Array(UnsafeBufferPointer(start: magnitudesPtr.baseAddress!, count: fftOutputSize))
-                                    saveArrayToFile(extractedArray, filename: "fft_debug_extractedMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                                    saveArrayToFile(extractedArray, filename: "fft_debug_extractedMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: windowSize)
                                 }
                             }
                         }
@@ -1155,6 +1279,7 @@ final class AudioUnitMonitor {
                 }
             }
         }
+        // Lock is automatically unlocked by defer
         
         // The DFT outputs the full N-point transform, but we only computed magnitudes for the first N/2 bins
         // (DC to just before Nyquist) to avoid mirroring - the second half is a mirror for real input
@@ -1162,17 +1287,17 @@ final class AudioUnitMonitor {
         
         // Debug: Save fftMagnitudesFull before extraction to file
         if processCallbackCount <= 3 {
-            saveArrayToFile(fftMagnitudesFull, filename: "fft_debug_fftMagnitudesFull_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+            saveArrayToFile(fftMagnitudesFull, filename: "fft_debug_fftMagnitudesFull_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: windowSize)
         }
         
-        // Extract the desired number of bands (take first fftBandQuantity bins)
+        // Extract the desired number of bands (take first bandQuantity bins)
         // DFT outputs bins in order from DC (0 Hz) to just before Nyquist
-        let bandsToUse = min(fftBandQuantity, fftMagnitudesFull.count)
+        let bandsToUse = min(bandQuantity, fftMagnitudesFull.count)
         var resultMagnitudes = Array(fftMagnitudesFull.prefix(bandsToUse))
         
         // Debug: Save resultMagnitudes after extraction to file
         if processCallbackCount <= 3 {
-            saveArrayToFile(resultMagnitudes, filename: "fft_debug_resultMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+            saveArrayToFile(resultMagnitudes, filename: "fft_debug_resultMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: windowSize)
         }
         
         // Debug: Log detailed information to verify FFT output and extraction
@@ -1185,7 +1310,7 @@ final class AudioUnitMonitor {
             
             // Frequency bin mapping (assuming 44.1kHz sample rate)
             let sampleRate: Float = 44100.0
-            let frequencyResolution = sampleRate / Float(fftWindowSize)
+            let frequencyResolution = sampleRate / Float(windowSize)
             
             // Show first 20 and last 20 bins with their frequencies
             var firstBinsInfo: [String] = []
@@ -1214,7 +1339,7 @@ final class AudioUnitMonitor {
             }
             
             print("🔍 [FFT Debug] ========== FFT Analysis #\(processCallbackCount) ==========")
-            print("   Input: \(fftWindowSize) samples, min=\(String(format: "%.4f", inputMin)), max=\(String(format: "%.4f", inputMax)), RMS=\(String(format: "%.4f", inputRMS))")
+            print("   Input: \(windowSize) samples, min=\(String(format: "%.4f", inputMin)), max=\(String(format: "%.4f", inputMax)), RMS=\(String(format: "%.4f", inputRMS))")
             print("   Sample rate: \(sampleRate)Hz, Frequency resolution: \(String(format: "%.2f", frequencyResolution))Hz/bin")
             print("   FFT output: \(fftMagnitudesFull.count) bins (DC to just before Nyquist), Using: \(bandsToUse) bands")
             print("   First 20 bins (low freq):")
@@ -1242,8 +1367,8 @@ final class AudioUnitMonitor {
         
         // Pad with zeros if we need more bands than available (shouldn't happen if calculation is correct)
         // But this ensures we always return the expected array size
-        if resultMagnitudes.count < fftBandQuantity {
-            resultMagnitudes.append(contentsOf: [Float](repeating: 0, count: fftBandQuantity - resultMagnitudes.count))
+        if resultMagnitudes.count < bandQuantity {
+            resultMagnitudes.append(contentsOf: [Float](repeating: 0, count: bandQuantity - resultMagnitudes.count))
         }
         
         // Limit magnitudes to prevent distortion (following tutorial approach)
@@ -1251,7 +1376,7 @@ final class AudioUnitMonitor {
         
         // Debug: Save final magnitudes after limiting to file
         if processCallbackCount <= 3 {
-            saveArrayToFile(finalMagnitudes, filename: "fft_debug_finalMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+            saveArrayToFile(finalMagnitudes, filename: "fft_debug_finalMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: windowSize)
         }
         
         return finalMagnitudes
