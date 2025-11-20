@@ -49,12 +49,19 @@ public struct AudioVisualizerFeature: Reducer {
         /// Scrolling update rate (frames per second)
         public var scrollingRate: Double = Constants.defaultScrollingRate
         
+        /// Maximum number of frames to keep in scrolling buffer
+        public var maxScrollingFrames: Int = Constants.defaultScrollingFrameLimit
+        
         /// Scrolling buffer for historical frames (for scrolling mode)
+        /// Circular buffer with fixed size to avoid reallocation
         /// Each element is a frame of data (magnitudes or samples)
         private var scrollingBuffer: [[Float]] = []
         
-        /// Maximum number of frames to keep in scrolling buffer
-        private let maxScrollingFrames = 200
+        /// Write index for circular buffer (points to next slot to write)
+        private var scrollingBufferWriteIndex: Int = 0
+        
+        /// Number of frames currently stored in the circular buffer
+        private var scrollingBufferCount: Int = 0
         
         /// Timestamp of last scrolling buffer update (not included in Equatable comparison)
         private var lastScrollingUpdateTime: Date?
@@ -159,6 +166,7 @@ public struct AudioVisualizerFeature: Reducer {
             // Use provided band quantity or calculate appropriate one for the default FFT window size
             self.fftBandQuantity = fftBandQuantity ?? Constants.calculateAppropriateFFTBandQuantity(for: Constants.defaultFFTWindowSize, includeNyquist: false)
             self.scrollingRate = Constants.defaultScrollingRate
+            self.maxScrollingFrames = Constants.defaultScrollingFrameLimit
         }
         
         // Custom Equatable implementation to exclude lastUpdateTime, fpsHistory, and interpolation state from comparison
@@ -173,6 +181,7 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.selectedPreset == rhs.selectedPreset &&
             lhs.renderingMode == rhs.renderingMode &&
             lhs.scrollingRate == rhs.scrollingRate &&
+            lhs.maxScrollingFrames == rhs.maxScrollingFrames &&
             lhs.bufferSize == rhs.bufferSize &&
             lhs.fftWindowSize == rhs.fftWindowSize &&
             lhs.includeNyquistBand == rhs.includeNyquistBand &&
@@ -181,12 +190,13 @@ public struct AudioVisualizerFeature: Reducer {
         }
         
         /// Update scrolling buffer with new frame data (rate-controlled)
+        /// Uses a circular buffer to avoid reallocating memory
         mutating func updateScrollingBuffer(rawSamples: [Float]) {
             guard renderingMode == .scrolling else {
                 // Clear buffer when not in scrolling mode
-                if !scrollingBuffer.isEmpty {
-                    scrollingBuffer.removeAll()
-                }
+                scrollingBuffer.removeAll(keepingCapacity: false)
+                scrollingBufferWriteIndex = 0
+                scrollingBufferCount = 0
                 lastScrollingUpdateTime = nil
                 return
             }
@@ -216,12 +226,25 @@ public struct AudioVisualizerFeature: Reducer {
             }
             
             if !currentFrame.isEmpty {
-                // Add new frame to buffer
-                scrollingBuffer.append(currentFrame)
+                // Initialize buffer to fixed size if needed
+                // Pre-allocate to avoid reallocation during runtime
+                if scrollingBuffer.count < maxScrollingFrames {
+                    scrollingBuffer.reserveCapacity(maxScrollingFrames)
+                    while scrollingBuffer.count < maxScrollingFrames {
+                        scrollingBuffer.append([])
+                    }
+                }
                 
-                // Limit buffer size
-                if scrollingBuffer.count > maxScrollingFrames {
-                    scrollingBuffer.removeFirst()
+                // Write to circular buffer (reuse existing slot, no allocation)
+                // This overwrites the array reference, reusing the slot
+                scrollingBuffer[scrollingBufferWriteIndex] = currentFrame
+                
+                // Update write index (wrap around)
+                scrollingBufferWriteIndex = (scrollingBufferWriteIndex + 1) % maxScrollingFrames
+                
+                // Update count (don't exceed max)
+                if scrollingBufferCount < maxScrollingFrames {
+                    scrollingBufferCount += 1
                 }
                 
                 // Update timestamp
@@ -231,8 +254,69 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// Clear the scrolling buffer
         mutating func clearScrollingBuffer() {
-            scrollingBuffer.removeAll()
+            scrollingBuffer.removeAll(keepingCapacity: false)
+            scrollingBufferWriteIndex = 0
+            scrollingBufferCount = 0
             lastScrollingUpdateTime = nil
+        }
+        
+        /// Resize the scrolling buffer to a new maximum frame limit
+        /// This will clear the buffer and reinitialize it with the new size
+        /// - Parameter newLimit: The new maximum number of frames
+        /// - Parameter oldLimit: The previous maximum number of frames (for preserving data)
+        mutating func resizeScrollingBuffer(to newLimit: Int, oldLimit: Int) {
+            guard newLimit > 0 else {
+                return
+            }
+            
+            // If buffer is already initialized and new limit is different, resize it
+            if scrollingBuffer.count > 0 {
+                // If new limit is smaller, we need to adjust the buffer
+                if newLimit < oldLimit {
+                    // Truncate buffer to new size, preserving the most recent frames
+                    // Since we're using a circular buffer, we need to extract the most recent frames
+                    let oldBuffer = scrollingBuffer
+                    let oldCount = scrollingBufferCount
+                    let oldWriteIndex = scrollingBufferWriteIndex
+                    
+                    // Clear and reinitialize
+                    scrollingBuffer.removeAll(keepingCapacity: false)
+                    scrollingBuffer.reserveCapacity(newLimit)
+                    while scrollingBuffer.count < newLimit {
+                        scrollingBuffer.append([])
+                    }
+                    
+                    // Copy the most recent frames (up to newLimit)
+                    let framesToKeep = min(oldCount, newLimit)
+                    if framesToKeep > 0 {
+                        // Calculate starting index for old buffer (oldest frame to keep)
+                        let startIndex = oldCount == oldLimit 
+                            ? (oldWriteIndex + (oldCount - framesToKeep)) % oldLimit
+                            : oldCount - framesToKeep
+                        
+                        // Copy frames to new buffer
+                        for i in 0..<framesToKeep {
+                            let oldIndex = (startIndex + i) % oldLimit
+                            scrollingBuffer[i] = oldBuffer[oldIndex]
+                        }
+                        
+                        scrollingBufferCount = framesToKeep
+                        scrollingBufferWriteIndex = framesToKeep % newLimit
+                    } else {
+                        scrollingBufferCount = 0
+                        scrollingBufferWriteIndex = 0
+                    }
+                } else if newLimit > oldLimit {
+                    // Expand buffer to new size
+                    scrollingBuffer.reserveCapacity(newLimit)
+                    while scrollingBuffer.count < newLimit {
+                        scrollingBuffer.append([])
+                    }
+                    // Adjust write index if needed (shouldn't be necessary, but be safe)
+                    scrollingBufferWriteIndex = scrollingBufferWriteIndex % newLimit
+                }
+            }
+            // If buffer is empty, it will be initialized on next update with the new limit
         }
         
         /// Clear the continuous waveform buffer
@@ -247,11 +331,36 @@ public struct AudioVisualizerFeature: Reducer {
         }
         
         /// Get scrolling data (read-only)
+        /// Returns frames in chronological order (oldest to newest)
         public var scrollingData: [[Float]]? {
-            guard renderingMode == .scrolling && !scrollingBuffer.isEmpty else {
+            guard renderingMode == .scrolling && scrollingBufferCount > 0 else {
                 return nil
             }
-            return scrollingBuffer
+            
+            // Return frames in chronological order (oldest to newest)
+            // Start from the oldest frame and wrap around
+            var result: [[Float]] = []
+            result.reserveCapacity(scrollingBufferCount)
+            
+            // Calculate the starting index (oldest frame)
+            // If buffer is full, oldest is at writeIndex (next to be overwritten)
+            // If buffer is not full, oldest is at index 0
+            let startIndex: Int
+            if scrollingBufferCount == maxScrollingFrames {
+                // Buffer is full, oldest frame is at writeIndex
+                startIndex = scrollingBufferWriteIndex
+            } else {
+                // Buffer is not full, oldest frame is at index 0
+                startIndex = 0
+            }
+            
+            // Collect frames in chronological order
+            for i in 0..<scrollingBufferCount {
+                let index = (startIndex + i) % maxScrollingFrames
+                result.append(scrollingBuffer[index])
+            }
+            
+            return result
         }
         
         /// Update continuous waveform buffer with new samples
@@ -498,6 +607,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// Scrolling rate selection changed
         case scrollingRateSelected(Double)
         
+        /// Maximum scrolling frames selection changed
+        case maxScrollingFramesSelected(Int)
+        
         /// Buffer size selection changed
         case bufferSizeSelected(Int)
         
@@ -634,6 +746,17 @@ public struct AudioVisualizerFeature: Reducer {
                 state.scrollingRate = rate
                 // Reset update timer to allow immediate update with new rate
                 state.resetScrollingUpdateTimer()
+                return .none
+                
+            case let .maxScrollingFramesSelected(newLimit):
+                // Only change if different
+                guard newLimit != state.maxScrollingFrames else {
+                    return .none
+                }
+                let oldLimit = state.maxScrollingFrames
+                state.maxScrollingFrames = newLimit
+                // Resize the buffer (preserves recent frames if possible)
+                state.resizeScrollingBuffer(to: newLimit, oldLimit: oldLimit)
                 return .none
                 
             case let .bufferSizeSelected(newBufferSize):

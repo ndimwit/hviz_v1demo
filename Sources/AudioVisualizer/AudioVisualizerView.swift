@@ -220,6 +220,25 @@ public struct AudioVisualizerView: View {
                                 .pickerStyle(.menu)
                                 .frame(maxWidth: isRegularWidth ? 90 : 70)
                             }
+                            
+                            // Frame limit selector (only visible in scrolling mode)
+                            HStack(spacing: 4) {
+                                Text("Frames:")
+                                    .font(isRegularWidth ? .body : .caption)
+                                    .foregroundColor(.secondary)
+                                
+                                Picker("Frame Limit", selection: Binding(
+                                    get: { viewStore.maxScrollingFrames },
+                                    set: { viewStore.send(.maxScrollingFramesSelected($0)) }
+                                )) {
+                                    ForEach(Constants.availableScrollingFrameLimits, id: \.self) { limit in
+                                        Text("\(limit)")
+                                            .tag(limit)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: isRegularWidth ? 80 : 60)
+                            }
                         }
                         
                         Spacer()

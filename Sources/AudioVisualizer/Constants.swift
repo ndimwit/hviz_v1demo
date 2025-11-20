@@ -36,6 +36,12 @@ public enum Constants {
     /// Default scrolling update rate (frames per second)
     public static let defaultScrollingRate: Double = 30
     
+    /// Available scrolling frame limit sizes (must be multiples of 2)
+    public static let availableScrollingFrameLimits: [Int] = [2, 4, 8, 16, 32, 64, 128]
+    
+    /// Default scrolling frame limit
+    public static let defaultScrollingFrameLimit: Int = 16
+    
     /// Calculate required FFT buffer size from desired number of bands
     /// For a real FFT, we get N/2+1 bins from N samples
     /// To get at least 'bands' bins, we need at least 2*bands-2 samples
