@@ -77,6 +77,14 @@ final class AudioUnitMonitor {
     
     init() {}
     
+    deinit {
+        // Clean up FFT setup if object is deallocated
+        if let setup = fftSetup {
+            vDSP_DFT_DestroySetup(setup)
+            fftSetup = nil
+        }
+    }
+    
     // MARK: - Public Methods
     
     /// Start monitoring audio input from the microphone
@@ -96,11 +104,18 @@ final class AudioUnitMonitor {
         }
         
         self.bufferSize = bufferSize
-        self.fftWindowSize = fftWindowSize
         
-        // Calculate appropriate band quantity if not provided, ensuring we don't exceed N/2+1 to avoid mirroring
-        let calculatedBandQuantity = fftBandQuantity ?? Constants.calculateAppropriateFFTBandQuantity(for: fftWindowSize, includeNyquist: false)
-        self.fftBandQuantity = min(calculatedBandQuantity, fftWindowSize / 2 + 1) // Safety check: never exceed N/2+1
+        // If band quantity is provided, calculate window size from it (4x relationship for better resolution)
+        // Otherwise, use the provided window size and calculate band quantity from it
+        if let requestedBandQuantity = fftBandQuantity {
+            // Calculate window size from band quantity (4x for better frequency resolution)
+            self.fftWindowSize = Constants.calculateFFTWindowSize(for: requestedBandQuantity)
+            self.fftBandQuantity = requestedBandQuantity
+        } else {
+            // Use provided window size and calculate appropriate band quantity
+            self.fftWindowSize = fftWindowSize
+            self.fftBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: fftWindowSize, includeNyquist: false)
+        }
         
         // Initialize magnitudes array with correct size
         await MainActor.run {
@@ -169,7 +184,9 @@ final class AudioUnitMonitor {
         }
         #endif
         
-        // Ensure band quantity doesn't exceed the maximum unique bins (N/2+1) to avoid mirroring
+        // Safety check: Ensure band quantity doesn't exceed the maximum unique bins (N/2+1) to avoid mirroring
+        // With the new 4x relationship (windowSize = 4 * bandQuantity), this should never trigger,
+        // but we keep it as a safety measure in case window size is manually set too small
         let maxUniqueBands = self.fftWindowSize / 2 + 1
         if self.fftBandQuantity > maxUniqueBands {
             print("⚠️ [AudioUnit] Band quantity \(self.fftBandQuantity) exceeds maximum unique bins \(maxUniqueBands) for window size \(self.fftWindowSize). Limiting to \(maxUniqueBands) to avoid mirroring.")
@@ -195,20 +212,34 @@ final class AudioUnitMonitor {
         print("✅ [AudioUnit] Created FFT setup - buffer size: \(bufferSize), FFT window size: \(fftWindowSize), band quantity: \(fftBandQuantity)")
         #endif
         
-        // Set up AudioUnit
-        print("🔧 [AudioUnit] Setting up AudioUnit...")
-        try setupAudioUnit()
-        print("✅ [AudioUnit] AudioUnit setup complete")
-        
-        // Start AudioUnit
-        print("▶️ [AudioUnit] Starting AudioUnit...")
-        let status = AudioOutputUnitStart(audioUnit!)
-        if status == noErr {
-            print("✅ [AudioUnit] AudioUnit started successfully")
-            isMonitoring = true
-        } else {
-            print("❌ [AudioUnit] Failed to start AudioUnit (status: \(status))")
-            throw AudioVisualizerError.invalidAudioFormat
+        // Set up AudioUnit with proper cleanup on error
+        do {
+            print("🔧 [AudioUnit] Setting up AudioUnit...")
+            try setupAudioUnit()
+            print("✅ [AudioUnit] AudioUnit setup complete")
+            
+            // Start AudioUnit
+            print("▶️ [AudioUnit] Starting AudioUnit...")
+            let status = AudioOutputUnitStart(audioUnit!)
+            if status == noErr {
+                print("✅ [AudioUnit] AudioUnit started successfully")
+                isMonitoring = true
+            } else {
+                print("❌ [AudioUnit] Failed to start AudioUnit (status: \(status))")
+                // Clean up FFT setup before throwing
+                if let setup = fftSetup {
+                    vDSP_DFT_DestroySetup(setup)
+                    fftSetup = nil
+                }
+                throw AudioVisualizerError.invalidAudioFormat
+            }
+        } catch let error {
+            // Clean up FFT setup if setupAudioUnit() or AudioOutputUnitStart() failed
+            if let setup = fftSetup {
+                vDSP_DFT_DestroySetup(setup)
+                fftSetup = nil
+            }
+            throw error
         }
     }
     
@@ -266,6 +297,7 @@ final class AudioUnitMonitor {
     }
     
     /// Change the FFT band quantity, stopping and restarting monitoring if needed
+    /// Window size will be automatically calculated as 4x the band quantity for better frequency resolution
     /// - Parameter newBandQuantity: New number of FFT bands to display
     func changeFFTBandQuantity(_ newBandQuantity: Int) async throws {
         guard newBandQuantity > 0 else {
@@ -281,10 +313,13 @@ final class AudioUnitMonitor {
         }
         
         // Restart monitoring if it was running
+        // Pass band quantity only - window size will be calculated automatically (4x relationship)
         if wasMonitoring {
-            try await startMonitoring(bufferSize: currentBufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: newBandQuantity)
+            try await startMonitoring(bufferSize: currentBufferSize, fftWindowSize: Constants.defaultFFTWindowSize, fftBandQuantity: newBandQuantity)
         } else {
+            // Calculate window size from band quantity and update both
             self.fftBandQuantity = newBandQuantity
+            self.fftWindowSize = Constants.calculateFFTWindowSize(for: newBandQuantity)
             await MainActor.run {
                 fftMagnitudes = [Float](repeating: 0, count: newBandQuantity)
             }
@@ -909,91 +944,150 @@ final class AudioUnitMonitor {
         // Prepare input data (use first fftWindowSize samples)
         var inputData = Array(data.prefix(fftWindowSize))
         
+        #if VERBOSE_FFT_DEBUG
+        if processCallbackCount <= 3 {
+            print("🔍 [FFT Debug] Input data size: \(inputData.count), fftWindowSize: \(fftWindowSize)")
+            print("🔍 [FFT Debug] FFT setup was created with window size: \(fftWindowSize)")
+            print("🔍 [FFT Debug] Input data range: min=\(inputData.min() ?? 0), max=\(inputData.max() ?? 0), RMS=\(sqrt(inputData.map { $0 * $0 }.reduce(0, +) / Float(inputData.count)))")
+        }
+        #endif
+        
         // Apply windowing function to reduce spectral leakage
         // Using Hann window for better frequency resolution
         var window = [Float](repeating: 0, count: fftWindowSize)
         vDSP_hann_window(&window, vDSP_Length(fftWindowSize), Int32(vDSP_HANN_NORM))
         vDSP_vmul(inputData, 1, window, 1, &inputData, 1, vDSP_Length(fftWindowSize))
         
-        // Following the tutorial: use separate real and imaginary output arrays
-        // DFT outputs N complex values (N real + N imaginary)
-        // For real input, we only need the first N/2 bins (DC to just before Nyquist) to avoid mirroring
-        // We exclude Nyquist (bin N/2) to ensure we don't get any mirrored data
-        let fftOutputSize = fftWindowSize / 2  // Use N/2 bins, not N/2+1, to avoid mirroring
+        // Following Apple's vDSP documentation for real-to-complex DFT:
+        // vDSP_DFT_Execute outputs the full N-point complex result (N real + N imaginary values)
+        // For a real input signal, the output has conjugate symmetry:
+        //   - Bin 0: DC component (real only, imaginary = 0)
+        //   - Bins 1 to N/2-1: Complex frequency components
+        //   - Bin N/2: Nyquist frequency (real only, imaginary = 0)
+        //   - Bins N/2+1 to N-1: Complex conjugates of bins N/2-1 to 1 (imaginary parts negated)
+        // 
+        // IMPORTANT: Bins N/2+1 to N-1 are NOT zeros - they contain the complex conjugates!
+        // The magnitudes of bins k and N-k are the same, but the phases are opposite.
+        // 
+        // To avoid mirroring, we extract only the unique bins: 0 to N/2 (inclusive) = N/2+1 bins
+        // However, if includeNyquist is false, we use N/2 bins (excluding Nyquist at bin N/2)
+        // CRITICAL: We must extract bins 0 to N/2, NOT 0 to N/2-1, to avoid including mirrored data
+        let maxUniqueBins = fftWindowSize / 2 + 1  // N/2+1 includes DC to Nyquist
+        // CRITICAL FIX: Always extract ALL unique bins (N/2), then limit to fftBandQuantity later
+        // Previously we were limiting here, which caused us to lose half the frequency data
+        let fftOutputSize = fftWindowSize / 2  // Always extract all unique bins (excluding Nyquist)
+        
         var realOut = [Float](repeating: 0, count: fftWindowSize)
         var imagOut = [Float](repeating: 0, count: fftWindowSize)
         var inputImag = [Float](repeating: 0, count: fftWindowSize) // Zero for real input
         var magnitudes = [Float](repeating: 0, count: fftOutputSize)
         
-        // Execute DFT using the tutorial's approach
+        #if VERBOSE_FFT_DEBUG
+        if processCallbackCount <= 3 {
+            print("🔍 [FFT Debug] Output arrays: realOut.count=\(realOut.count), imagOut.count=\(imagOut.count), inputImag.count=\(inputImag.count)")
+            print("🔍 [FFT Debug] Expected output size: \(fftWindowSize), fftOutputSize (extracted): \(fftOutputSize)")
+        }
+        #endif
+        
+        // Execute DFT - vDSP_DFT_Execute requires both real and imaginary inputs and outputs
+        // Even though input is real, we must provide imaginary input array (all zeros)
         inputData.withUnsafeBufferPointer { inputPtr in
             inputImag.withUnsafeBufferPointer { inputImagPtr in
                 realOut.withUnsafeMutableBufferPointer { realOutPtr in
                     imagOut.withUnsafeMutableBufferPointer { imagOutPtr in
-                        magnitudes.withUnsafeMutableBufferPointer { magnitudesPtr in
-                            // Execute the DFT
-                            // vDSP_DFT_Execute requires both real and imaginary inputs and outputs
-                            vDSP_DFT_Execute(
-                                fftSetup,
-                                inputPtr.baseAddress!,
-                                inputImagPtr.baseAddress!,
-                                realOutPtr.baseAddress!,
-                                imagOutPtr.baseAddress!
-                            )
+                        vDSP_DFT_Execute(
+                            fftSetup,
+                            inputPtr.baseAddress!,
+                            inputImagPtr.baseAddress!,
+                            realOutPtr.baseAddress!,
+                            imagOutPtr.baseAddress!
+                        )
+                        
+                        // Debug: Check raw DFT output before computing magnitudes
+                        #if VERBOSE_FFT_DEBUG
+                        if processCallbackCount <= 3 {
+                            print("🔍 [FFT Debug] Raw DFT output (first 10 real/imag pairs):")
+                            for i in 0..<min(10, fftWindowSize) {
+                                print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
+                            }
+                            print("🔍 [FFT Debug] Raw DFT output (last 10 real/imag pairs):")
+                            for i in max(0, fftWindowSize - 10)..<fftWindowSize {
+                                print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
+                            }
+                        }
+                        #endif
+                        
+                        // Create split complex structure for magnitude calculation
+                        // Note: We must keep realOut and imagOut in scope during this operation
+                        var complex = DSPSplitComplex(
+                            realp: realOutPtr.baseAddress!,
+                            imagp: imagOutPtr.baseAddress!
+                        )
+                        
+                        // Compute magnitudes for all N bins to verify mirroring
+                        var allMagnitudes = [Float](repeating: 0, count: fftWindowSize)
+                        allMagnitudes.withUnsafeMutableBufferPointer { allMagPtr in
+                            vDSP_zvabs(&complex, 1, allMagPtr.baseAddress!, 1, vDSP_Length(fftWindowSize))
                             
-                            // Debug: Check raw DFT output before computing magnitudes
                             #if VERBOSE_FFT_DEBUG
                             if processCallbackCount <= 3 {
-                                print("🔍 [FFT Debug] Raw DFT output (first 10 real/imag pairs):")
-                                for i in 0..<min(10, fftWindowSize) {
-                                    print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
-                                }
-                                print("🔍 [FFT Debug] Raw DFT output (last 10 real/imag pairs):")
-                                for i in max(0, fftWindowSize - 10)..<fftWindowSize {
-                                    print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
-                                }
+                                print("🔍 [FFT Debug] Computed magnitudes for \(fftWindowSize) bins")
+                                print("🔍 [FFT Debug] First 5 magnitudes: \(Array(allMagPtr.prefix(5)))")
+                                print("🔍 [FFT Debug] Last 5 magnitudes: \(Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!.advanced(by: fftWindowSize - 5), count: 5)))")
                             }
                             #endif
                             
-                            // Hold the DFT output as split complex
-                            var complex = DSPSplitComplex(
-                                realp: realOutPtr.baseAddress!,
-                                imagp: imagOutPtr.baseAddress!
-                            )
-                            
-                            // Compute magnitudes for all N bins first to see the full output
-                            var allMagnitudes = [Float](repeating: 0, count: fftWindowSize)
-                            allMagnitudes.withUnsafeMutableBufferPointer { allMagPtr in
-                                vDSP_zvabs(&complex, 1, allMagPtr.baseAddress!, 1, vDSP_Length(fftWindowSize))
+                            // Debug: Save ALL magnitudes from the full DFT output to file
+                            #if VERBOSE_FFT_DEBUG
+                            if processCallbackCount <= 3 {
+                                let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
+                                saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
                                 
-                                // Debug: Save ALL magnitudes from the full DFT output to file
-                                #if VERBOSE_FFT_DEBUG
-                                if processCallbackCount <= 3 {
-                                    let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
-                                    saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
-                                    
-                                    // Check for mirroring: compare bin k with bin N-k
-                                    print("🔍 [FFT Debug] Mirroring check (comparing bin k with bin N-k):")
-                                    for k in 1..<min(50, fftWindowSize / 2) {
-                                        let mirrorIdx = fftWindowSize - k
-                                        let diff = abs(allMagPtr[k] - allMagPtr[mirrorIdx])
-                                        if diff > 0.001 {  // Only print if there's a significant difference
-                                            print("   bin[\(k)]=\(String(format: "%.4f", allMagPtr[k])) vs bin[\(mirrorIdx)]=\(String(format: "%.4f", allMagPtr[mirrorIdx])): diff=\(String(format: "%.4f", diff))")
-                                        }
+                                // Check for mirroring: compare bin k with bin N-k
+                                // For real input, bins k and N-k should have the same magnitude (conjugate symmetry)
+                                print("🔍 [FFT Debug] Mirroring check (comparing bin k with bin N-k):")
+                                var mirroringIssues = 0
+                                for k in 1..<min(50, fftWindowSize / 2) {
+                                    let mirrorIdx = fftWindowSize - k
+                                    let diff = abs(allMagPtr[k] - allMagPtr[mirrorIdx])
+                                    if diff > 0.001 {  // Only print if there's a significant difference
+                                        print("   ⚠️ bin[\(k)]=\(String(format: "%.4f", allMagPtr[k])) vs bin[\(mirrorIdx)]=\(String(format: "%.4f", allMagPtr[mirrorIdx])): diff=\(String(format: "%.4f", diff))")
+                                        mirroringIssues += 1
                                     }
                                 }
-                                #else
-                                // Save files even when verbose logging is disabled (less intrusive than console spam)
-                                if processCallbackCount <= 3 {
-                                    let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
-                                    saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                                if mirroringIssues == 0 {
+                                    print("   ✅ Mirroring check passed: bins k and N-k have matching magnitudes (as expected for real input)")
                                 }
-                                #endif
-                                
-                                // Extract only the first N/2 bins (DC to just before Nyquist) - these are the unique bins
-                                // We exclude Nyquist (bin N/2) to avoid any mirrored data
-                                // Copy from the full output to our magnitudes array
+                            }
+                            #else
+                            // Save files even when verbose logging is disabled (less intrusive than console spam)
+                            if processCallbackCount <= 3 {
+                                let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
+                                saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                            }
+                            #endif
+                            
+                            // Extract only the first N/2 bins (DC to just before Nyquist) - these are the unique bins
+                            // CRITICAL DISCOVERY: For a real input, the DFT output has conjugate symmetry:
+                            //   - Bins 0 to N/2-1: Unique frequency components
+                            //   - Bin N/2: Nyquist (real only)
+                            //   - Bins N/2+1 to N-1: Complex conjugates of bins N/2-1 to 1 (same magnitude, negated imaginary)
+                            // The test revealed that bins 250-255 (for N=512) are complex conjugates of bins 6-1
+                            // We must extract ONLY bins 0 to N/2-1 to avoid including mirrored data
+                            // Copy directly from allMagnitudes to magnitudes array (captured from outer scope)
+                            magnitudes.withUnsafeMutableBufferPointer { magnitudesPtr in
                                 for i in 0..<fftOutputSize {
+                                    // Ensure we don't access beyond valid range
+                                    // CRITICAL: fftOutputSize is N/2, so we extract bins 0 to N/2-1 (not including Nyquist)
+                                    // This ensures we never include bins >= N/2 which would be mirrored data
+                                    guard i < allMagPtr.count && i < magnitudesPtr.count else { break }
+                                    // Double-check we're not extracting mirrored bins
+                                    guard i < fftWindowSize / 2 else {
+                                        #if VERBOSE_FFT_DEBUG
+                                        print("⚠️ [FFT] Attempted to extract bin \(i) which is >= N/2 (\(fftWindowSize/2)), skipping to avoid mirroring")
+                                        #endif
+                                        break
+                                    }
                                     magnitudesPtr[i] = allMagPtr[i]
                                 }
                                 

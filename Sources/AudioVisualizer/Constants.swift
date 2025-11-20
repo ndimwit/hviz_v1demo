@@ -51,6 +51,30 @@ public enum Constants {
         return size
     }
     
+    /// Calculate appropriate FFT window size from desired band quantity
+    /// For better frequency resolution, we use 4x the band quantity as the window size
+    /// This doubles the previous relationship (which was 2x) to provide better frequency resolution
+    /// - Parameter bandQuantity: The desired number of frequency bands
+    /// - Returns: The appropriate FFT window size (power of 2, rounded up)
+    public static func calculateFFTWindowSize(for bandQuantity: Int) -> Int {
+        // For N bands, we want 4*N window size (doubled from the previous 2*N relationship)
+        // This gives us better frequency resolution
+        let desiredWindowSize = 4 * bandQuantity
+        
+        // Round up to next power of 2
+        var size = 8  // Minimum window size
+        while size < desiredWindowSize {
+            size *= 2
+            // Safety check: don't exceed maximum available size
+            if size > availableFFTWindowSizes.last! {
+                return availableFFTWindowSizes.last!
+            }
+        }
+        
+        // Ensure it's at least the minimum
+        return max(size, 8)
+    }
+    
     /// Calculate appropriate FFT band quantity for a given FFT window size
     /// For a real FFT, we get N/2+1 unique bins from N samples
     /// We should NEVER exceed N/2+1 to avoid mirroring artifacts
