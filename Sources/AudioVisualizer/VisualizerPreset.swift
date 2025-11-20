@@ -33,6 +33,11 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
     case oscilloscope = "oscilloscope"
     case stereoField = "stereo_field"
     case quadrant = "quadrant"
+    case hlslVisualizer = "hlsl_visualizer"
+    case mslVisualizer = "msl_visualizer"
+    case cameraVisualizer = "camera_visualizer"
+    case hlslTest = "hlsl_test"
+    case mslTest = "msl_test"
     
     public var id: String { rawValue }
     
@@ -48,6 +53,16 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
             return "Stereo Field"
         case .quadrant:
             return "Quadrant View"
+        case .hlslVisualizer:
+            return "HLSL Shader"
+        case .mslVisualizer:
+            return "MSL Shader"
+        case .cameraVisualizer:
+            return "Camera + Line Chart"
+        case .hlslTest:
+            return "HLSL Test (Simple)"
+        case .mslTest:
+            return "MSL Test (Simple)"
         }
     }
     
@@ -63,6 +78,16 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
             return StereoFieldPreset()
         case .quadrant:
             return QuadrantPreset()
+        case .hlslVisualizer:
+            return HLSLVisualizerPreset()
+        case .mslVisualizer:
+            return MSLVisualizerPreset()
+        case .cameraVisualizer:
+            return CameraVisualizerPreset()
+        case .hlslTest:
+            return HLSLTestPreset()
+        case .mslTest:
+            return MSLTestPreset()
         }
     }
 }

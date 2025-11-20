@@ -89,6 +89,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 4748704240AC8A79D3A5255F /* Build configuration list for PBXNativeTarget "AudioVisualizerApp" */;
 			buildPhases = (
+				125D03D92ECF7AA1007EF6B9 /* ShellScript */,
 				9FBAB4AC59222EBDBA2B5731 /* Sources */,
 				56F89CF6235E884746B1AB09 /* Frameworks */,
 			);
@@ -164,6 +165,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		125D03D92ECF7AA1007EF6B9 /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "${SRCROOT}/Scripts/convert_hlsl_to_metal.sh\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		9FBAB4AC59222EBDBA2B5731 /* Sources */ = {
@@ -441,6 +462,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		71251D1EA61B2B14080CFE96 /* AudioVisualizer */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 182862B98CA59C99D3F2CC2B /* XCLocalSwiftPackageReference "." */;
 			productName = AudioVisualizer;
 		};
 /* End XCSwiftPackageProductDependency section */

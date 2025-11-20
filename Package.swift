@@ -27,6 +27,9 @@ let package = Package(
                     name: "ComposableArchitecture",
                     package: "swift-composable-architecture"
                 ),
+            ],
+            resources: [
+                .process("Shaders/HLSLVisualizerShader.hlsl")
             ]
         ),
         .testTarget(
