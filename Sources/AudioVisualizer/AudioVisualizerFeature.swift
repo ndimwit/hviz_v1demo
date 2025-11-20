@@ -813,6 +813,31 @@ public struct AudioVisualizerFeature: Reducer {
                 
             case let .presetSelected(preset):
                 state.selectedPreset = preset
+                // Validate and adjust frame limit if needed
+                // Get available frame limits for the new preset
+                let availableLimits: [Int]
+                if preset == .oscilloscope {
+                    availableLimits = Constants.availableOscilloscopeScrollingFrameLimits
+                } else {
+                    availableLimits = Constants.availableScrollingFrameLimits
+                }
+                
+                // If current frame limit is not in the available options, reset to default
+                if !availableLimits.contains(state.maxScrollingFrames) {
+                    let oldLimit = state.maxScrollingFrames
+                    // Try to use default (16), but if not available, use the smallest available value
+                    let newLimit: Int
+                    if availableLimits.contains(Constants.defaultScrollingFrameLimit) {
+                        newLimit = Constants.defaultScrollingFrameLimit
+                    } else {
+                        // Use the smallest available value (first in sorted list)
+                        newLimit = availableLimits.min() ?? Constants.defaultScrollingFrameLimit
+                    }
+                    state.maxScrollingFrames = newLimit
+                    // Resize the buffer to the new limit
+                    state.resizeScrollingBuffer(to: newLimit, oldLimit: oldLimit)
+                }
+                
                 // Clear scrolling buffer when switching presets to ensure clean transition
                 state.clearScrollingBuffer()
                 return .none
