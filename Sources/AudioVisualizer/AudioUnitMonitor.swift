@@ -6,6 +6,15 @@ import AudioUnit
 import CoreAudio
 #endif
 
+// MARK: - Verbose FFT Debugging
+// To enable verbose FFT debugging messages, add the compiler flag "VERBOSE_FFT_DEBUG" to your Xcode project:
+// 1. Select your project in Xcode
+// 2. Select your target
+// 3. Go to Build Settings
+// 4. Search for "Other Swift Flags" or "Swift Compiler - Custom Flags"
+// 5. Add "-D VERBOSE_FFT_DEBUG" to the flags for Debug configuration (or both Debug and Release)
+// See VERBOSE_FFT_DEBUG_SETUP.md for detailed instructions.
+
 /// AudioUnit-based monitor for reliable microphone access on Mac Catalyst
 /// Uses RemoteIO AudioUnit for direct hardware access, bypassing AVAudioEngine issues
 /// Note: C callbacks run on background threads, so we handle thread safety internally
@@ -16,11 +25,15 @@ final class AudioUnitMonitor {
     /// Audio unit instance (needs to be accessible from C callback)
     var audioUnit: AudioUnit?
     
-    /// FFT configuration buffer size (must be power of 2 for FFT)
-    private var bufferSize: Int = 8192
+    /// Audio buffer size (must be power of 2)
+    private var bufferSize: Int = Constants.defaultBufferSize
+    
+    /// FFT window size (must be power of 2, starting from 8)
+    private var fftWindowSize: Int = Constants.defaultFFTWindowSize
     
     /// Number of FFT bands to display
-    private var fftBandQuantity: Int = Constants.defaultFFTBandQuantity
+    /// Initialized to appropriate value for default window size to avoid mirroring
+    private var fftBandQuantity: Int = Constants.calculateAppropriateFFTBandQuantity(for: Constants.defaultFFTWindowSize, includeNyquist: false)
     
     /// FFT configuration setup
     private var fftSetup: OpaquePointer?
@@ -68,20 +81,30 @@ final class AudioUnitMonitor {
     
     /// Start monitoring audio input from the microphone
     /// - Parameters:
-    ///   - bufferSize: FFT buffer size (must be power of 2, defaults to 8192)
-    ///   - fftBandQuantity: Number of FFT bands to display (defaults to Constants.defaultFFTBandQuantity)
-    func startMonitoring(bufferSize: Int = 8192, fftBandQuantity: Int = Constants.defaultFFTBandQuantity) async throws {
+    ///   - bufferSize: Audio buffer size (must be power of 2, defaults to Constants.defaultBufferSize)
+    ///   - fftWindowSize: FFT window size (must be power of 2, starting from 8, defaults to Constants.defaultFFTWindowSize)
+    ///   - fftBandQuantity: Number of FFT bands to display (defaults to appropriate value for window size to avoid mirroring)
+    func startMonitoring(bufferSize: Int = Constants.defaultBufferSize, fftWindowSize: Int = Constants.defaultFFTWindowSize, fftBandQuantity: Int? = nil) async throws {
         // Validate buffer size is a power of 2
         guard bufferSize > 0 && (bufferSize & (bufferSize - 1)) == 0 else {
             throw AudioVisualizerError.invalidAudioFormat
         }
         
+        // Validate FFT window size is a power of 2 and at least 8
+        guard fftWindowSize >= 8 && (fftWindowSize & (fftWindowSize - 1)) == 0 else {
+            throw AudioVisualizerError.invalidAudioFormat
+        }
+        
         self.bufferSize = bufferSize
-        self.fftBandQuantity = fftBandQuantity
+        self.fftWindowSize = fftWindowSize
+        
+        // Calculate appropriate band quantity if not provided, ensuring we don't exceed N/2+1 to avoid mirroring
+        let calculatedBandQuantity = fftBandQuantity ?? Constants.calculateAppropriateFFTBandQuantity(for: fftWindowSize, includeNyquist: false)
+        self.fftBandQuantity = min(calculatedBandQuantity, fftWindowSize / 2 + 1) // Safety check: never exceed N/2+1
         
         // Initialize magnitudes array with correct size
         await MainActor.run {
-            fftMagnitudes = [Float](repeating: 0, count: fftBandQuantity)
+            fftMagnitudes = [Float](repeating: 0, count: self.fftBandQuantity)
         }
         print("🚀 [AudioUnit] startMonitoring() called")
         guard !isMonitoring else {
@@ -146,10 +169,12 @@ final class AudioUnitMonitor {
         }
         #endif
         
-        // Calculate required FFT buffer size from band quantity
-        // Use the larger of the selected buffer size or the calculated size
-        let requiredBufferSize = max(bufferSize, Constants.calculateFFTBufferSize(for: fftBandQuantity))
-        self.bufferSize = requiredBufferSize
+        // Ensure band quantity doesn't exceed the maximum unique bins (N/2+1) to avoid mirroring
+        let maxUniqueBands = self.fftWindowSize / 2 + 1
+        if self.fftBandQuantity > maxUniqueBands {
+            print("⚠️ [AudioUnit] Band quantity \(self.fftBandQuantity) exceeds maximum unique bins \(maxUniqueBands) for window size \(self.fftWindowSize). Limiting to \(maxUniqueBands) to avoid mirroring.")
+            self.fftBandQuantity = maxUniqueBands
+        }
         
         // Destroy old FFT setup if it exists
         if let oldSetup = fftSetup {
@@ -157,19 +182,18 @@ final class AudioUnitMonitor {
             fftSetup = nil
         }
         
-        // Create FFT setup with the calculated buffer size
-        fftSetup = vDSP_DFT_zrop_CreateSetup(
-            nil,
-            UInt(bufferSize),
-            .FORWARD
-        )
+        // Create DFT setup following the tutorial approach
+        // vDSP_DFT_zrop_CreateSetup creates a setup for real-to-complex Discrete Fourier Transform
+        fftSetup = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(fftWindowSize), vDSP_DFT_Direction.FORWARD)
         
         guard fftSetup != nil else {
-            print("❌ [AudioUnit] Failed to create FFT setup with buffer size: \(bufferSize), band quantity: \(fftBandQuantity)")
+            print("❌ [AudioUnit] Failed to create DFT setup with window size: \(fftWindowSize), band quantity: \(fftBandQuantity)")
             throw AudioVisualizerError.fftSetupFailed
         }
         
-        print("✅ [AudioUnit] Created FFT setup - buffer size: \(bufferSize), band quantity: \(fftBandQuantity)")
+        #if VERBOSE_FFT_DEBUG
+        print("✅ [AudioUnit] Created FFT setup - buffer size: \(bufferSize), FFT window size: \(fftWindowSize), band quantity: \(fftBandQuantity)")
+        #endif
         
         // Set up AudioUnit
         print("🔧 [AudioUnit] Setting up AudioUnit...")
@@ -217,7 +241,7 @@ final class AudioUnitMonitor {
     }
     
     /// Change the buffer size, stopping and restarting monitoring if needed
-    /// - Parameter newBufferSize: New FFT buffer size (must be power of 2)
+    /// - Parameter newBufferSize: New audio buffer size (must be power of 2)
     func changeBufferSize(_ newBufferSize: Int) async throws {
         // Validate buffer size is a power of 2
         guard newBufferSize > 0 && (newBufferSize & (newBufferSize - 1)) == 0 else {
@@ -225,6 +249,7 @@ final class AudioUnitMonitor {
         }
         
         let wasMonitoring = isMonitoring
+        let currentWindowSize = fftWindowSize
         let currentBandQuantity = fftBandQuantity
         
         // Stop monitoring if it's running
@@ -234,7 +259,7 @@ final class AudioUnitMonitor {
         
         // Restart monitoring if it was running
         if wasMonitoring {
-            try await startMonitoring(bufferSize: newBufferSize, fftBandQuantity: currentBandQuantity)
+            try await startMonitoring(bufferSize: newBufferSize, fftWindowSize: currentWindowSize, fftBandQuantity: currentBandQuantity)
         } else {
             self.bufferSize = newBufferSize
         }
@@ -257,7 +282,7 @@ final class AudioUnitMonitor {
         
         // Restart monitoring if it was running
         if wasMonitoring {
-            try await startMonitoring(bufferSize: currentBufferSize, fftBandQuantity: newBandQuantity)
+            try await startMonitoring(bufferSize: currentBufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: newBandQuantity)
         } else {
             self.fftBandQuantity = newBandQuantity
             await MainActor.run {
@@ -590,7 +615,33 @@ final class AudioUnitMonitor {
         }
         #endif
         
-        // Set audio format (44.1kHz, mono, 32-bit float)
+        // First, try to get the actual hardware format to see what it provides
+        var propertySize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var hardwareFormat = AudioStreamBasicDescription()
+        
+        var status3 = AudioUnitGetProperty(
+            unit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            1,
+            &hardwareFormat,
+            &propertySize
+        )
+        
+        if status3 == noErr {
+            print("📊 [AudioUnit] Hardware input format:")
+            print("   Sample Rate: \(hardwareFormat.mSampleRate) Hz")
+            print("   Channels: \(Int(hardwareFormat.mChannelsPerFrame))")
+            print("   Format Flags: \(hardwareFormat.mFormatFlags)")
+            let isInterleaved = (hardwareFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+            print("   Interleaved: \(isInterleaved ? "Yes" : "No")")
+        } else {
+            print("⚠️ [AudioUnit] Could not get hardware format (status: \(status3)), will use requested format")
+        }
+        
+        // Request stereo format (2 channels) so we get both left and right
+        // We'll convert to mono in processAudioBuffer by averaging channels
+        // This ensures we capture audio from both channels even if panned
         var audioFormat = AudioStreamBasicDescription(
             mSampleRate: 44100.0,
             mFormatID: kAudioFormatLinearPCM,
@@ -598,7 +649,7 @@ final class AudioUnitMonitor {
             mBytesPerPacket: 4,
             mFramesPerPacket: 1,
             mBytesPerFrame: 4,
-            mChannelsPerFrame: 1,
+            mChannelsPerFrame: 2, // Request stereo to get both channels
             mBitsPerChannel: 32,
             mReserved: 0
         )
@@ -613,8 +664,24 @@ final class AudioUnitMonitor {
             &audioFormat,
             UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         )
-        guard status2 == noErr else {
-            throw AudioVisualizerError.invalidAudioFormat
+        if status2 == noErr {
+            print("✅ [AudioUnit] Set format to stereo (2 channels) - will convert to mono in processing")
+        } else {
+            print("⚠️ [AudioUnit] Failed to set stereo format (status: \(status2)), trying mono...")
+            // Fallback to mono if stereo isn't supported
+            audioFormat.mChannelsPerFrame = 1
+            status2 = AudioUnitSetProperty(
+                unit,
+                kAudioUnitProperty_StreamFormat,
+                kAudioUnitScope_Output,
+                1,
+                &audioFormat,
+                UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            )
+            guard status2 == noErr else {
+                throw AudioVisualizerError.invalidAudioFormat
+            }
+            print("✅ [AudioUnit] Set format to mono (1 channel)")
         }
         
         // Set render callback
@@ -651,7 +718,8 @@ final class AudioUnitMonitor {
             print("🎵 [AudioUnit] Process callback #\(processCallbackCount) - \(inNumberFrames) frames")
         }
         
-        guard let audioBufferList = UnsafeMutableAudioBufferListPointer(ioData).first else {
+        let bufferListPtr = UnsafeMutableAudioBufferListPointer(ioData)
+        guard let audioBufferList = bufferListPtr.first else {
             if processCallbackCount <= 5 {
                 print("❌ [AudioUnit] No audio buffer list in callback")
             }
@@ -667,8 +735,69 @@ final class AudioUnitMonitor {
             return
         }
         
-        // Copy samples to our buffer
-        let samples = Array(UnsafeBufferPointer(start: channelData, count: Int(inNumberFrames)))
+        // Handle mono or stereo audio
+        // For non-interleaved stereo, we have multiple buffers (one per channel)
+        // For interleaved stereo, we have one buffer with 2 channels
+        let numBuffers = bufferListPtr.count
+        let channelsPerBuffer = Int(audioBufferList.mNumberChannels)
+        
+        if processCallbackCount <= 5 {
+            print("📊 [AudioUnit] Buffer info: \(numBuffers) buffers, \(channelsPerBuffer) channels per buffer")
+        }
+        
+        let samples: [Float]
+        if numBuffers > 1 && bufferListPtr[1].mData != nil {
+            // Non-interleaved stereo: separate buffers for left and right
+            let leftChannel = Array(UnsafeBufferPointer(start: channelData, count: Int(inNumberFrames)))
+            let rightChannelData = bufferListPtr[1].mData?.assumingMemoryBound(to: Float.self)
+            
+            if let rightChannelData = rightChannelData {
+                let rightChannel = Array(UnsafeBufferPointer(start: rightChannelData, count: Int(inNumberFrames)))
+                
+                // Debug: check if we're actually getting different data in left vs right
+                if processCallbackCount <= 5 {
+                    let leftMax = leftChannel.map { abs($0) }.max() ?? 0
+                    let rightMax = rightChannel.map { abs($0) }.max() ?? 0
+                    print("📊 [AudioUnit] Left channel max: \(leftMax), Right channel max: \(rightMax)")
+                }
+                
+                // Average left and right to create mono
+                samples = zip(leftChannel, rightChannel).map { ($0 + $1) / 2.0 }
+                
+                if processCallbackCount <= 5 {
+                    print("📊 [AudioUnit] Converted non-interleaved stereo to mono: \(samples.count) samples")
+                }
+            } else {
+                if processCallbackCount <= 5 {
+                    print("⚠️ [AudioUnit] Right channel data is nil, using left only")
+                }
+                // Fallback to mono (left channel only)
+                samples = leftChannel
+            }
+        } else if channelsPerBuffer == 2 {
+            // Interleaved stereo: samples alternate L, R, L, R, ...
+            let interleavedCount = Int(inNumberFrames) * 2
+            let interleavedSamples = Array(UnsafeBufferPointer(start: channelData, count: interleavedCount))
+            // Extract and average left and right channels
+            var monoResult: [Float] = []
+            monoResult.reserveCapacity(Int(inNumberFrames))
+            for i in 0..<Int(inNumberFrames) {
+                let left = interleavedSamples[i * 2]
+                let right = interleavedSamples[i * 2 + 1]
+                monoResult.append((left + right) / 2.0)
+            }
+            samples = monoResult
+            
+            if processCallbackCount <= 5 {
+                print("📊 [AudioUnit] Converted interleaved stereo to mono: \(samples.count) samples")
+            }
+        } else {
+            // Mono: just copy the samples
+            samples = Array(UnsafeBufferPointer(start: channelData, count: Int(inNumberFrames)))
+            if processCallbackCount <= 5 {
+                print("📊 [AudioUnit] Mono audio: \(samples.count) samples")
+            }
+        }
         
         // Check if we're getting actual audio data (not just silence)
         let maxSample = samples.max() ?? 0
@@ -682,30 +811,47 @@ final class AudioUnitMonitor {
         let currentBufferSize = sampleBuffer.count
         
         // Process when we have enough samples
-        if sampleBuffer.count >= bufferSize {
-            let audioData = Array(sampleBuffer.prefix(bufferSize))
-            sampleBuffer.removeFirst(bufferSize)
+        // Process when we have enough samples for the FFT window
+        // We need at least fftWindowSize samples to perform the FFT
+        if sampleBuffer.count >= fftWindowSize {
+            // Take fftWindowSize samples for FFT processing
+            let audioData = Array(sampleBuffer.prefix(fftWindowSize))
+            // Remove bufferSize samples to maintain rolling window (or all if less)
+            let samplesToRemove = min(bufferSize, sampleBuffer.count)
+            sampleBuffer.removeFirst(samplesToRemove)
             bufferLock.unlock()
             
             if processCallbackCount <= 10 {
+                #if VERBOSE_FFT_DEBUG
                 print("✅ [AudioUnit] Processing FFT with \(audioData.count) samples (buffer was \(currentBufferSize))")
+                #endif
             }
             
             // Perform FFT asynchronously and update on main actor
             Task { @MainActor in
-                let magnitudes = await self.performFFT(data: audioData)
-                self.fftMagnitudes = magnitudes
+                do {
+                    let magnitudes = await self.performFFT(data: audioData)
+                    if magnitudes.isEmpty {
+                        print("⚠️ [AudioUnit] FFT returned empty magnitudes array")
+                    } else {
+                        self.fftMagnitudes = magnitudes
+                        
+                        if processCallbackCount <= 10 {
+                            let maxMagnitude = magnitudes.max() ?? 0
+                            #if VERBOSE_FFT_DEBUG
+                            print("📈 [AudioUnit] FFT complete - max magnitude: \(maxMagnitude)")
+                            #endif
+                        }
+                    }
+                } catch {
+                    print("❌ [AudioUnit] FFT error: \(error)")
+                }
                 
                 // Store raw audio samples for time-domain visualization
                 // Keep a rolling window of recent samples
                 self.rawAudioSamples.append(contentsOf: audioData)
                 if self.rawAudioSamples.count > self.maxRawSamples {
                     self.rawAudioSamples.removeFirst(self.rawAudioSamples.count - self.maxRawSamples)
-                }
-                
-                if processCallbackCount <= 10 {
-                    let maxMagnitude = magnitudes.max() ?? 0
-                    print("📈 [AudioUnit] FFT complete - max magnitude: \(maxMagnitude)")
                 }
             }
         } else {
@@ -722,74 +868,246 @@ final class AudioUnitMonitor {
         }
     }
     
+    /// Save array to text file for debugging
+    private func saveArrayToFile(_ array: [Float], filename: String, sampleRate: Float, windowSize: Int) {
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let fileURL = documentsPath.appendingPathComponent(filename)
+        
+        var content = "Index\tFrequency(Hz)\tMagnitude\n"
+        let frequencyResolution = sampleRate / Float(windowSize)
+        
+        for (index, value) in array.enumerated() {
+            let freq = Float(index) * frequencyResolution
+            content += "\(index)\t\(String(format: "%.2f", freq))\t\(String(format: "%.6f", value))\n"
+        }
+        
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            #if VERBOSE_FFT_DEBUG
+            print("💾 [FFT Debug] Saved \(array.count) values to \(filename) at \(fileURL.path)")
+            #endif
+        } catch {
+            #if VERBOSE_FFT_DEBUG
+            print("❌ [FFT Debug] Failed to save \(filename): \(error)")
+            #endif
+        }
+    }
+    
     /// Perform Fast Fourier Transform on audio data
+    /// Uses vDSP_DFT_Execute following the tutorial approach
     private func performFFT(data: [Float]) async -> [Float] {
-        guard data.count >= bufferSize else {
+        guard data.count >= fftWindowSize else {
+            print("⚠️ [FFT] Not enough data: \(data.count) < \(fftWindowSize)")
             return [Float](repeating: 0, count: fftBandQuantity)
         }
         
         guard let fftSetup = fftSetup else {
+            print("⚠️ [FFT] FFT setup is nil")
             return [Float](repeating: 0, count: fftBandQuantity)
         }
         
-        // Prepare input data (only use first bufferSize samples)
-        let inputData = Array(data.prefix(bufferSize))
+        // Prepare input data (use first fftWindowSize samples)
+        var inputData = Array(data.prefix(fftWindowSize))
         
-        // Allocate memory for FFT input (imaginary part is zero for real input)
-        let inputImag = [Float](repeating: 0, count: bufferSize)
+        // Apply windowing function to reduce spectral leakage
+        // Using Hann window for better frequency resolution
+        var window = [Float](repeating: 0, count: fftWindowSize)
+        vDSP_hann_window(&window, vDSP_Length(fftWindowSize), Int32(vDSP_HANN_NORM))
+        vDSP_vmul(inputData, 1, window, 1, &inputData, 1, vDSP_Length(fftWindowSize))
         
-        // Allocate memory for FFT output
-        var realOut = [Float](repeating: 0, count: bufferSize)
-        var imagOut = [Float](repeating: 0, count: bufferSize)
+        // Following the tutorial: use separate real and imaginary output arrays
+        // DFT outputs N complex values (N real + N imaginary)
+        // For real input, we only need the first N/2 bins (DC to just before Nyquist) to avoid mirroring
+        // We exclude Nyquist (bin N/2) to ensure we don't get any mirrored data
+        let fftOutputSize = fftWindowSize / 2  // Use N/2 bins, not N/2+1, to avoid mirroring
+        var realOut = [Float](repeating: 0, count: fftWindowSize)
+        var imagOut = [Float](repeating: 0, count: fftWindowSize)
+        var inputImag = [Float](repeating: 0, count: fftWindowSize) // Zero for real input
+        var magnitudes = [Float](repeating: 0, count: fftOutputSize)
         
-        // For a real FFT, we get bufferSize/2 + 1 frequency bins
-        let fftOutputSize = bufferSize / 2 + 1
-        var fftMagnitudesFull = [Float](repeating: 0, count: fftOutputSize)
-        
-        // Perform FFT using Accelerate framework
+        // Execute DFT using the tutorial's approach
         inputData.withUnsafeBufferPointer { inputPtr in
             inputImag.withUnsafeBufferPointer { inputImagPtr in
                 realOut.withUnsafeMutableBufferPointer { realOutPtr in
                     imagOut.withUnsafeMutableBufferPointer { imagOutPtr in
-                        // Execute DFT
-                        vDSP_DFT_Execute(
-                            fftSetup,
-                            inputPtr.baseAddress!,
-                            inputImagPtr.baseAddress!,
-                            realOutPtr.baseAddress!,
-                            imagOutPtr.baseAddress!
-                        )
-                    
-                        // Hold the DFT output
-                        var complex = DSPSplitComplex(
-                            realp: realOutPtr.baseAddress!,
-                            imagp: imagOutPtr.baseAddress!
-                        )
-                        
-                        // Compute magnitude of each frequency component
-                        vDSP_zvabs(
-                            &complex,
-                            1,
-                            &fftMagnitudesFull,
-                            1,
-                            UInt(fftOutputSize)
-                        )
+                        magnitudes.withUnsafeMutableBufferPointer { magnitudesPtr in
+                            // Execute the DFT
+                            // vDSP_DFT_Execute requires both real and imaginary inputs and outputs
+                            vDSP_DFT_Execute(
+                                fftSetup,
+                                inputPtr.baseAddress!,
+                                inputImagPtr.baseAddress!,
+                                realOutPtr.baseAddress!,
+                                imagOutPtr.baseAddress!
+                            )
+                            
+                            // Debug: Check raw DFT output before computing magnitudes
+                            #if VERBOSE_FFT_DEBUG
+                            if processCallbackCount <= 3 {
+                                print("🔍 [FFT Debug] Raw DFT output (first 10 real/imag pairs):")
+                                for i in 0..<min(10, fftWindowSize) {
+                                    print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
+                                }
+                                print("🔍 [FFT Debug] Raw DFT output (last 10 real/imag pairs):")
+                                for i in max(0, fftWindowSize - 10)..<fftWindowSize {
+                                    print("   bin[\(i)]: real=\(String(format: "%.4f", realOutPtr[i])), imag=\(String(format: "%.4f", imagOutPtr[i]))")
+                                }
+                            }
+                            #endif
+                            
+                            // Hold the DFT output as split complex
+                            var complex = DSPSplitComplex(
+                                realp: realOutPtr.baseAddress!,
+                                imagp: imagOutPtr.baseAddress!
+                            )
+                            
+                            // Compute magnitudes for all N bins first to see the full output
+                            var allMagnitudes = [Float](repeating: 0, count: fftWindowSize)
+                            allMagnitudes.withUnsafeMutableBufferPointer { allMagPtr in
+                                vDSP_zvabs(&complex, 1, allMagPtr.baseAddress!, 1, vDSP_Length(fftWindowSize))
+                                
+                                // Debug: Save ALL magnitudes from the full DFT output to file
+                                #if VERBOSE_FFT_DEBUG
+                                if processCallbackCount <= 3 {
+                                    let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
+                                    saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                                    
+                                    // Check for mirroring: compare bin k with bin N-k
+                                    print("🔍 [FFT Debug] Mirroring check (comparing bin k with bin N-k):")
+                                    for k in 1..<min(50, fftWindowSize / 2) {
+                                        let mirrorIdx = fftWindowSize - k
+                                        let diff = abs(allMagPtr[k] - allMagPtr[mirrorIdx])
+                                        if diff > 0.001 {  // Only print if there's a significant difference
+                                            print("   bin[\(k)]=\(String(format: "%.4f", allMagPtr[k])) vs bin[\(mirrorIdx)]=\(String(format: "%.4f", allMagPtr[mirrorIdx])): diff=\(String(format: "%.4f", diff))")
+                                        }
+                                    }
+                                }
+                                #else
+                                // Save files even when verbose logging is disabled (less intrusive than console spam)
+                                if processCallbackCount <= 3 {
+                                    let allMagArray = Array(UnsafeBufferPointer(start: allMagPtr.baseAddress!, count: fftWindowSize))
+                                    saveArrayToFile(allMagArray, filename: "fft_debug_allMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                                }
+                                #endif
+                                
+                                // Extract only the first N/2 bins (DC to just before Nyquist) - these are the unique bins
+                                // We exclude Nyquist (bin N/2) to avoid any mirrored data
+                                // Copy from the full output to our magnitudes array
+                                for i in 0..<fftOutputSize {
+                                    magnitudesPtr[i] = allMagPtr[i]
+                                }
+                                
+                                // Debug: Save the extracted magnitudes array to file
+                                if processCallbackCount <= 3 {
+                                    let extractedArray = Array(UnsafeBufferPointer(start: magnitudesPtr.baseAddress!, count: fftOutputSize))
+                                    saveArrayToFile(extractedArray, filename: "fft_debug_extractedMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         
-        // Extract the desired number of bands (take first fftBandQuantity bins)
-        let bandsToUse = min(fftBandQuantity, fftMagnitudesFull.count)
-        var magnitudes = Array(fftMagnitudesFull.prefix(bandsToUse))
+        // The DFT outputs the full N-point transform, but we only computed magnitudes for the first N/2 bins
+        // (DC to just before Nyquist) to avoid mirroring - the second half is a mirror for real input
+        let fftMagnitudesFull = magnitudes
         
-        // Pad with zeros if we need more bands than available
-        if magnitudes.count < fftBandQuantity {
-            magnitudes.append(contentsOf: [Float](repeating: 0, count: fftBandQuantity - magnitudes.count))
+        // Debug: Save fftMagnitudesFull before extraction to file
+        if processCallbackCount <= 3 {
+            saveArrayToFile(fftMagnitudesFull, filename: "fft_debug_fftMagnitudesFull_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
         }
         
-        // Limit magnitudes to prevent distortion
-        return magnitudes.map { min($0, Constants.magnitudeLimit) }
+        // Extract the desired number of bands (take first fftBandQuantity bins)
+        // DFT outputs bins in order from DC (0 Hz) to just before Nyquist
+        let bandsToUse = min(fftBandQuantity, fftMagnitudesFull.count)
+        var resultMagnitudes = Array(fftMagnitudesFull.prefix(bandsToUse))
+        
+        // Debug: Save resultMagnitudes after extraction to file
+        if processCallbackCount <= 3 {
+            saveArrayToFile(resultMagnitudes, filename: "fft_debug_resultMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+        }
+        
+        // Debug: Log detailed information to verify FFT output and extraction
+        #if VERBOSE_FFT_DEBUG
+        if processCallbackCount <= 10 {
+            // Input data statistics
+            let inputMin = inputData.min() ?? 0
+            let inputMax = inputData.max() ?? 0
+            let inputRMS = sqrt(inputData.map { $0 * $0 }.reduce(0, +) / Float(inputData.count))
+            
+            // Frequency bin mapping (assuming 44.1kHz sample rate)
+            let sampleRate: Float = 44100.0
+            let frequencyResolution = sampleRate / Float(fftWindowSize)
+            
+            // Show first 20 and last 20 bins with their frequencies
+            var firstBinsInfo: [String] = []
+            var lastBinsInfo: [String] = []
+            for i in 0..<min(20, fftMagnitudesFull.count) {
+                let freq = Float(i) * frequencyResolution
+                firstBinsInfo.append("bin[\(i)]=\(String(format: "%.1f", freq))Hz:\(String(format: "%.3f", fftMagnitudesFull[i]))")
+            }
+            for i in max(0, fftMagnitudesFull.count - 20)..<fftMagnitudesFull.count {
+                let freq = Float(i) * frequencyResolution
+                lastBinsInfo.append("bin[\(i)]=\(String(format: "%.1f", freq))Hz:\(String(format: "%.3f", fftMagnitudesFull[i]))")
+            }
+            
+            // Magnitude distribution
+            let firstQuarter = resultMagnitudes.prefix(resultMagnitudes.count / 4)
+            let secondQuarter = resultMagnitudes.dropFirst(resultMagnitudes.count / 4).prefix(resultMagnitudes.count / 4)
+            let thirdQuarter = resultMagnitudes.dropFirst(resultMagnitudes.count / 2).prefix(resultMagnitudes.count / 4)
+            let lastQuarter = resultMagnitudes.suffix(resultMagnitudes.count / 4)
+            
+            // Find bins with significant energy (> 0.1)
+            let significantBins = fftMagnitudesFull.enumerated().filter { $0.element > 0.1 }
+            var significantInfo: [String] = []
+            for (index, magnitude) in significantBins.prefix(20) {
+                let freq = Float(index) * frequencyResolution
+                significantInfo.append("bin[\(index)]=\(String(format: "%.1f", freq))Hz:\(String(format: "%.3f", magnitude))")
+            }
+            
+            print("🔍 [FFT Debug] ========== FFT Analysis #\(processCallbackCount) ==========")
+            print("   Input: \(fftWindowSize) samples, min=\(String(format: "%.4f", inputMin)), max=\(String(format: "%.4f", inputMax)), RMS=\(String(format: "%.4f", inputRMS))")
+            print("   Sample rate: \(sampleRate)Hz, Frequency resolution: \(String(format: "%.2f", frequencyResolution))Hz/bin")
+            print("   FFT output: \(fftMagnitudesFull.count) bins (DC to just before Nyquist), Using: \(bandsToUse) bands")
+            print("   First 20 bins (low freq):")
+            for info in firstBinsInfo {
+                print("      \(info)")
+            }
+            print("   Last 20 bins (high freq):")
+            for info in lastBinsInfo {
+                print("      \(info)")
+            }
+            print("   Magnitude distribution by quarter:")
+            print("      Q1 (lowest): max=\(String(format: "%.3f", firstQuarter.max() ?? 0)), mean=\(String(format: "%.3f", firstQuarter.reduce(0, +) / Float(max(1, firstQuarter.count))))")
+            print("      Q2: max=\(String(format: "%.3f", secondQuarter.max() ?? 0)), mean=\(String(format: "%.3f", secondQuarter.reduce(0, +) / Float(max(1, secondQuarter.count))))")
+            print("      Q3: max=\(String(format: "%.3f", thirdQuarter.max() ?? 0)), mean=\(String(format: "%.3f", thirdQuarter.reduce(0, +) / Float(max(1, thirdQuarter.count))))")
+            print("      Q4 (highest): max=\(String(format: "%.3f", lastQuarter.max() ?? 0)), mean=\(String(format: "%.3f", lastQuarter.reduce(0, +) / Float(max(1, lastQuarter.count))))")
+            if !significantInfo.isEmpty {
+                print("   Bins with significant energy (>0.1):")
+                for info in significantInfo {
+                    print("      \(info)")
+                }
+            }
+            print("🔍 [FFT Debug] =================================================")
+        }
+        #endif
+        
+        // Pad with zeros if we need more bands than available (shouldn't happen if calculation is correct)
+        // But this ensures we always return the expected array size
+        if resultMagnitudes.count < fftBandQuantity {
+            resultMagnitudes.append(contentsOf: [Float](repeating: 0, count: fftBandQuantity - resultMagnitudes.count))
+        }
+        
+        // Limit magnitudes to prevent distortion (following tutorial approach)
+        let finalMagnitudes = resultMagnitudes.map { min($0, Constants.magnitudeLimit) }
+        
+        // Debug: Save final magnitudes after limiting to file
+        if processCallbackCount <= 3 {
+            saveArrayToFile(finalMagnitudes, filename: "fft_debug_finalMagnitudes_\(processCallbackCount).txt", sampleRate: 44100.0, windowSize: fftWindowSize)
+        }
+        
+        return finalMagnitudes
     }
 }
 
@@ -833,21 +1151,58 @@ private func renderCallback(
     
     // Allocate buffer for audio data
     // For HALOutput, ioData might be nil, so we always allocate our own buffer
-    var bufferList = AudioBufferList()
-    bufferList.mNumberBuffers = 1
-    bufferList.mBuffers.mNumberChannels = 1
-    bufferList.mBuffers.mDataByteSize = inNumberFrames * UInt32(MemoryLayout<Float>.size)
-    bufferList.mBuffers.mData = calloc(Int(inNumberFrames), MemoryLayout<Float>.size)
-    
-    guard bufferList.mBuffers.mData != nil else {
+    // We need to match the format we requested - stereo (2 channels, non-interleaved) requires 2 buffers
+    // Allocate AudioBufferList with space for 2 buffers (variable-length array)
+    let bufferListSize = MemoryLayout<AudioBufferList>.size + MemoryLayout<AudioBuffer>.size
+    let bufferListMemory = calloc(1, bufferListSize)
+    guard let bufferListMemory = bufferListMemory else {
         if currentCount <= 3 {
-            print("❌ [AudioUnit] Failed to allocate buffer")
+            print("❌ [AudioUnit] Failed to allocate buffer list memory")
         }
         return -1
     }
     
+    let bufferListPtr = bufferListMemory.assumingMemoryBound(to: AudioBufferList.self)
+    bufferListPtr.pointee.mNumberBuffers = 2  // Stereo requires 2 buffers for non-interleaved format
+    
+    // Allocate first buffer (left channel)
+    let leftData = calloc(Int(inNumberFrames), MemoryLayout<Float>.size)
+    guard let leftData = leftData else {
+        if currentCount <= 3 {
+            print("❌ [AudioUnit] Failed to allocate left channel buffer")
+        }
+        free(bufferListMemory)
+        return -1
+    }
+    
+    // Use UnsafeMutableAudioBufferListPointer helper to access buffers properly
+    let bufferListHelper = UnsafeMutableAudioBufferListPointer(bufferListPtr)
+    
+    // Set up first buffer (left channel)
+    bufferListHelper[0].mNumberChannels = 1
+    bufferListHelper[0].mDataByteSize = inNumberFrames * UInt32(MemoryLayout<Float>.size)
+    bufferListHelper[0].mData = leftData
+    
+    // Allocate second buffer (right channel)
+    let rightData = calloc(Int(inNumberFrames), MemoryLayout<Float>.size)
+    guard let rightData = rightData else {
+        if currentCount <= 3 {
+            print("❌ [AudioUnit] Failed to allocate right channel buffer")
+        }
+        free(leftData)
+        free(bufferListMemory)
+        return -1
+    }
+    
+    // Set up second buffer (right channel)
+    bufferListHelper[1].mNumberChannels = 1
+    bufferListHelper[1].mDataByteSize = inNumberFrames * UInt32(MemoryLayout<Float>.size)
+    bufferListHelper[1].mData = rightData
+    
     defer {
-        free(bufferList.mBuffers.mData)
+        free(leftData)
+        free(rightData)
+        free(bufferListMemory)
     }
     
     // Render audio into the buffer from input bus 1
@@ -858,7 +1213,7 @@ private func renderCallback(
         inTimeStamp,
         1, // input bus (bus 1 is input for RemoteIO/HALOutput)
         inNumberFrames,
-        &bufferList
+        bufferListPtr
     )
     
     if currentCount <= 3 {
@@ -873,7 +1228,7 @@ private func renderCallback(
     }
     
     // Process the audio buffer (ioData is nil for input callbacks, we use our allocated buffer)
-    monitor.processAudioBuffer(&bufferList, inNumberFrames)
+    monitor.processAudioBuffer(bufferListPtr, inNumberFrames)
     
     return noErr
 }

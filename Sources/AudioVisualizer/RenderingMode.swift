@@ -12,7 +12,7 @@ public enum RenderingMode: String, CaseIterable, Identifiable {
         case .chunk:
             return "Chunk"
         case .scrolling:
-            return "Scrolling"
+            return "Scrolling (Full)"
         }
     }
 }

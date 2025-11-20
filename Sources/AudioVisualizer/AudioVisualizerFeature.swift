@@ -62,6 +62,12 @@ public struct AudioVisualizerFeature: Reducer {
         /// Selected audio buffer size (FFT buffer size, must be power of 2)
         public var bufferSize: Int = Constants.defaultBufferSize
         
+        /// FFT window size (must be power of 2, starting from 8)
+        public var fftWindowSize: Int = Constants.defaultFFTWindowSize
+        
+        /// Whether to include the +1 band (Nyquist frequency bin)
+        public var includeNyquistBand: Bool = false
+        
         /// Number of FFT bands to display
         public var fftBandQuantity: Int = Constants.defaultFFTBandQuantity
         
@@ -116,7 +122,7 @@ public struct AudioVisualizerFeature: Reducer {
             frameRate: Double = 0.0,
             lastUpdateTime: Date? = nil,
             bufferSize: Int = Constants.defaultBufferSize,
-            fftBandQuantity: Int = Constants.defaultFFTBandQuantity
+            fftBandQuantity: Int? = nil
         ) {
             self.fftMagnitudes = fftMagnitudes
             self.displayMagnitudes = displayMagnitudes.isEmpty ? fftMagnitudes : displayMagnitudes
@@ -127,7 +133,10 @@ public struct AudioVisualizerFeature: Reducer {
             self.frameRate = frameRate
             self.lastUpdateTime = lastUpdateTime
             self.bufferSize = bufferSize
-            self.fftBandQuantity = fftBandQuantity
+            self.fftWindowSize = Constants.defaultFFTWindowSize
+            self.includeNyquistBand = false
+            // Use provided band quantity or calculate appropriate one for the default FFT window size
+            self.fftBandQuantity = fftBandQuantity ?? Constants.calculateAppropriateFFTBandQuantity(for: Constants.defaultFFTWindowSize, includeNyquist: false)
             self.scrollingRate = Constants.defaultScrollingRate
         }
         
@@ -142,6 +151,8 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.renderingMode == rhs.renderingMode &&
             lhs.scrollingRate == rhs.scrollingRate &&
             lhs.bufferSize == rhs.bufferSize &&
+            lhs.fftWindowSize == rhs.fftWindowSize &&
+            lhs.includeNyquistBand == rhs.includeNyquistBand &&
             lhs.fftBandQuantity == rhs.fftBandQuantity &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
         }
@@ -367,8 +378,11 @@ public struct AudioVisualizerFeature: Reducer {
         /// Buffer size selection changed
         case bufferSizeSelected(Int)
         
-        /// FFT band quantity selection changed
-        case fftBandQuantitySelected(Int)
+        /// FFT window size selection changed
+        case fftWindowSizeSelected(Int)
+        
+        /// Include Nyquist band toggle changed
+        case includeNyquistBandToggled(Bool)
     }
     
     // MARK: - Dependencies
@@ -385,9 +399,9 @@ public struct AudioVisualizerFeature: Reducer {
             case .onAppear:
                 // Auto-start monitoring if not already monitoring
                 if !state.isMonitoring {
-                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftBandQuantity = state.fftBandQuantity] send in
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = state.fftBandQuantity] send in
                         do {
-                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftBandQuantity: fftBandQuantity)
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)
                             
                             // Start observing magnitude updates
@@ -406,9 +420,9 @@ public struct AudioVisualizerFeature: Reducer {
                         await send(.monitoringStopped)
                     }
                 } else {
-                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftBandQuantity = state.fftBandQuantity] send in
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = state.fftBandQuantity] send in
                         do {
-                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftBandQuantity: fftBandQuantity)
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)
                             
                             // Start observing magnitude updates
@@ -491,19 +505,19 @@ public struct AudioVisualizerFeature: Reducer {
                 }
                 
                 let wasMonitoring = state.isMonitoring
-                let currentBandQuantity = state.fftBandQuantity
                 state.bufferSize = newBufferSize
                 
-                // If monitoring, restart with new buffer size
+                // Buffer size does NOT change FFT band quantity - only affects audio accumulation rate
+                // If monitoring, restart with new buffer size (preserving FFT window size and band quantity)
                 if wasMonitoring {
                     // Set monitoring to false temporarily to reflect the stop
                     state.isMonitoring = false
                     
-                    return .run { [audioMonitor, bufferSize = newBufferSize, fftBandQuantity = currentBandQuantity] send in
+                    return .run { [audioMonitor, bufferSize = newBufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = state.fftBandQuantity] send in
                         do {
-                            // Stop and restart with new buffer size, preserving band quantity
+                            // Stop and restart with new buffer size
                             await audioMonitor.stopMonitoring()
-                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftBandQuantity: fftBandQuantity)
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)
                             
                             // Start observing magnitude updates
@@ -516,24 +530,78 @@ public struct AudioVisualizerFeature: Reducer {
                 
                 return .none
                 
-            case let .fftBandQuantitySelected(newBandQuantity):
+            case let .fftWindowSizeSelected(newWindowSize):
                 // Only change if different
-                guard newBandQuantity != state.fftBandQuantity else {
+                guard newWindowSize != state.fftWindowSize else {
                     return .none
                 }
                 
                 let wasMonitoring = state.isMonitoring
-                state.fftBandQuantity = newBandQuantity
+                state.fftWindowSize = newWindowSize
+                
+                // Auto-select appropriate FFT band quantity for the new window size
+                let appropriateBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: newWindowSize, includeNyquist: state.includeNyquistBand)
+                state.fftBandQuantity = appropriateBandQuantity
+                
+                // Clear magnitude buffers and interpolation state to prevent mirroring from stale data
+                // This ensures a clean transition when window size changes
+                state.fftMagnitudes = []
+                state.displayMagnitudes = []
+                state.updateDisplayMagnitudes() // This will reset interpolation state
+                state.clearScrollingBuffer()
+                
+                // If monitoring, restart with new FFT window size and auto-selected band quantity
+                if wasMonitoring {
+                    // Set monitoring to false temporarily to reflect the stop
+                    state.isMonitoring = false
+                    
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = newWindowSize, fftBandQuantity = appropriateBandQuantity] send in
+                        do {
+                            // Stop and restart with new FFT window size and appropriate band quantity
+                            await audioMonitor.stopMonitoring()
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
+                            await send(.monitoringStarted)
+                            
+                            // Start observing magnitude updates
+                            await observeMagnitudes(audioMonitor: audioMonitor, send: send)
+                        } catch {
+                            await send(.errorOccurred(error.localizedDescription))
+                        }
+                    }
+                }
+                
+                return .none
+                
+            case let .includeNyquistBandToggled(includeNyquist):
+                // Only change if different
+                guard includeNyquist != state.includeNyquistBand else {
+                    return .none
+                }
+                
+                let wasMonitoring = state.isMonitoring
+                state.includeNyquistBand = includeNyquist
+                
+                // Recalculate FFT band quantity with new Nyquist setting
+                let appropriateBandQuantity = Constants.calculateAppropriateFFTBandQuantity(for: state.fftWindowSize, includeNyquist: includeNyquist)
+                print("🔄 [AudioVisualizer] Nyquist toggle changed: includeNyquist=\(includeNyquist), windowSize=\(state.fftWindowSize), newBandQuantity=\(appropriateBandQuantity)")
+                state.fftBandQuantity = appropriateBandQuantity
+                
+                // Clear magnitude buffers and interpolation state when Nyquist setting changes
+                state.fftMagnitudes = []
+                state.displayMagnitudes = []
+                state.updateDisplayMagnitudes() // This will reset interpolation state
+                state.clearScrollingBuffer()
                 
                 // If monitoring, restart with new band quantity
                 if wasMonitoring {
                     // Set monitoring to false temporarily to reflect the stop
                     state.isMonitoring = false
                     
-                    return .run { [audioMonitor, bandQuantity = newBandQuantity] send in
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = appropriateBandQuantity] send in
                         do {
-                            // Change FFT band quantity (this will stop and restart internally)
-                            try await audioMonitor.changeFFTBandQuantity(bandQuantity)
+                            // Stop and restart with new band quantity
+                            await audioMonitor.stopMonitoring()
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)
                             
                             // Start observing magnitude updates

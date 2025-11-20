@@ -133,23 +133,34 @@ public struct AudioVisualizerView: View {
                             .frame(maxWidth: isRegularWidth ? 100 : 80)
                         }
                         
-                        // FFT band quantity selector
+                        // FFT window size selector
                         HStack(spacing: 4) {
-                            Text("Bands:")
+                            Text("Window:")
                                 .font(isRegularWidth ? .body : .caption)
                                 .foregroundColor(.secondary)
                             
-                            Picker("FFT Bands", selection: Binding(
-                                get: { viewStore.fftBandQuantity },
-                                set: { viewStore.send(.fftBandQuantitySelected($0)) }
+                            Picker("FFT Window Size", selection: Binding(
+                                get: { viewStore.fftWindowSize },
+                                set: { viewStore.send(.fftWindowSizeSelected($0)) }
                             )) {
-                                ForEach(Constants.availableFFTBandQuantities, id: \.self) { quantity in
-                                    Text("\(quantity)")
-                                        .tag(quantity)
+                                ForEach(Constants.availableFFTWindowSizes, id: \.self) { size in
+                                    Text("\(size)")
+                                        .tag(size)
                                 }
                             }
                             .pickerStyle(.menu)
                             .frame(maxWidth: isRegularWidth ? 100 : 80)
+                        }
+                        
+                        // Include Nyquist band toggle
+                        HStack(spacing: 4) {
+                            Toggle("+1", isOn: Binding(
+                                get: { viewStore.includeNyquistBand },
+                                set: { viewStore.send(.includeNyquistBandToggled($0)) }
+                            ))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .help("Include Nyquist frequency band (+1)")
                         }
                         
                         // Rendering mode selector
