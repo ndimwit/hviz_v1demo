@@ -100,6 +100,18 @@ public struct AudioVisualizerFeature: Reducer {
         /// Number of FFT bands to display
         public var fftBandQuantity: Int = Constants.defaultFFTBandQuantity
         
+        /// Displacement scale for MSL Displace preset (0.0 to 1.0)
+        public var mslDisplaceScale: Float = 0.15
+        
+        /// Blur intensity for HLSL/MSL Blur Echo presets (0.0 to 1.0)
+        public var blurIntensity: Float = 0.5
+        
+        /// Echo intensity for HLSL/MSL Blur Echo presets (0.0 to 1.0)
+        public var echoIntensity: Float = 0.5
+        
+        /// Color transform intensity for HLSL/MSL Blur Echo presets (0.0 to 1.0)
+        public var colorTransformIntensity: Float = 0.3
+        
         /// Timestamp of last magnitude update (not included in Equatable comparison)
         var lastUpdateTime: Date?
         
@@ -185,6 +197,10 @@ public struct AudioVisualizerFeature: Reducer {
             lhs.bufferSize == rhs.bufferSize &&
             lhs.fftWindowSize == rhs.fftWindowSize &&
             lhs.fftBandQuantity == rhs.fftBandQuantity &&
+            abs(lhs.mslDisplaceScale - rhs.mslDisplaceScale) < 0.001 &&
+            abs(lhs.blurIntensity - rhs.blurIntensity) < 0.001 &&
+            abs(lhs.echoIntensity - rhs.echoIntensity) < 0.001 &&
+            abs(lhs.colorTransformIntensity - rhs.colorTransformIntensity) < 0.001 &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
         }
         
@@ -696,6 +712,18 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// FFT band quantity selection changed
         case fftBandQuantitySelected(Int)
+        
+        /// MSL Displace scale selection changed
+        case mslDisplaceScaleSelected(Float)
+        
+        /// Blur intensity selection changed
+        case blurIntensitySelected(Float)
+        
+        /// Echo intensity selection changed
+        case echoIntensitySelected(Float)
+        
+        /// Color transform intensity selection changed
+        case colorTransformIntensitySelected(Float)
     }
     
     // MARK: - Dependencies
@@ -942,33 +970,35 @@ public struct AudioVisualizerFeature: Reducer {
                 let wasMonitoring = state.isMonitoring
                 state.fftBandQuantity = newBandQuantity
                 
-                // Clear magnitude buffers and interpolation state to prevent mirroring from stale data
-                // This ensures a clean transition when band quantity changes
-                state.fftMagnitudes = []
-                state.displayMagnitudes = []
-                state.updateDisplayMagnitudes() // This will reset interpolation state
-                state.clearScrollingBuffer()
-                
-                // If monitoring, restart with new FFT band quantity
+                // Restart monitoring if it was active to apply new band quantity
                 if wasMonitoring {
-                    // Set monitoring to false temporarily to reflect the stop
-                    state.isMonitoring = false
-                    
-                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = newBandQuantity] send in
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = state.fftBandQuantity] send in
+                        await audioMonitor.stopMonitoring()
                         do {
-                            // Stop and restart with new FFT band quantity
-                            await audioMonitor.stopMonitoring()
                             try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)
-                            
-                            // Start observing magnitude updates
                             await observeMagnitudes(audioMonitor: audioMonitor, send: send)
                         } catch {
                             await send(.errorOccurred(error.localizedDescription))
                         }
                     }
                 }
+                return .none
                 
+            case let .mslDisplaceScaleSelected(newScale):
+                state.mslDisplaceScale = max(0.0, min(1.0, newScale)) // Clamp to [0, 1]
+                return .none
+                
+            case let .blurIntensitySelected(newIntensity):
+                state.blurIntensity = max(0.0, min(1.0, newIntensity)) // Clamp to [0, 1]
+                return .none
+                
+            case let .echoIntensitySelected(newIntensity):
+                state.echoIntensity = max(0.0, min(1.0, newIntensity)) // Clamp to [0, 1]
+                return .none
+                
+            case let .colorTransformIntensitySelected(newIntensity):
+                state.colorTransformIntensity = max(0.0, min(1.0, newIntensity)) // Clamp to [0, 1]
                 return .none
             }
         }

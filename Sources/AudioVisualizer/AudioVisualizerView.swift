@@ -2,6 +2,64 @@ import SwiftUI
 import Charts
 import ComposableArchitecture
 
+/// Endless number selector - click and drag to increment/decrement
+private struct EndlessNumberSelector: View {
+    @Binding var value: Double
+    let min: Double
+    let max: Double
+    let step: Double
+    let format: (Double) -> String
+    
+    @State private var dragStartValue: Double = 0
+    @State private var dragStartLocation: CGPoint = .zero
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(format(value))
+                .font(.callout.monospacedDigit())
+                .foregroundColor(.primary)
+                .frame(minWidth: 50, alignment: .leading)
+            
+            // Drag area
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 100, height: 24)
+                .overlay(
+                    HStack {
+                        Image(systemName: "chevron.left")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                )
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesture in
+                            if dragStartLocation == .zero {
+                                dragStartLocation = gesture.location
+                                dragStartValue = value
+                            }
+                            
+                            let deltaX = gesture.location.x - dragStartLocation.x
+                            let sensitivity: Double = 0.5 // Pixels per step
+                            let steps = deltaX / sensitivity
+                            let newValue = dragStartValue + (steps * step)
+                            
+                            value = Swift.max(min, Swift.min(max, newValue))
+                        }
+                        .onEnded { _ in
+                            dragStartLocation = .zero
+                            dragStartValue = value
+                        }
+                )
+        }
+    }
+}
+
 /// Parameter type for the unified control selector
 private enum ControlParameter: String, CaseIterable, Identifiable {
     case preset = "Preset"
@@ -11,6 +69,10 @@ private enum ControlParameter: String, CaseIterable, Identifiable {
     case mode = "Mode"
     case rate = "Rate"
     case frames = "Frames"
+    case displaceScale = "Displace Scale"
+    case blurIntensity = "Blur Intensity"
+    case echoIntensity = "Echo Intensity"
+    case colorTransformIntensity = "Color Transform"
     
     var id: String { rawValue }
     
@@ -123,6 +185,20 @@ public struct AudioVisualizerView: View {
                                                 .font(isRegularWidth ? .callout : .caption2)
                                                 .tag(parameter)
                                         }
+                                    } else if parameter == .displaceScale {
+                                        // Only show Displace Scale if MSL Displace preset is selected
+                                        if viewStore.selectedPreset == .mslDisplace {
+                                            Text(parameter.displayName)
+                                                .font(isRegularWidth ? .callout : .caption2)
+                                                .tag(parameter)
+                                        }
+                                    } else if parameter == .blurIntensity || parameter == .echoIntensity || parameter == .colorTransformIntensity {
+                                        // Only show blur/echo controls if HLSL/MSL Blur Echo presets are selected
+                                        if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
+                                            Text(parameter.displayName)
+                                                .font(isRegularWidth ? .callout : .caption2)
+                                                .tag(parameter)
+                                        }
                                     } else {
                                         Text(parameter.displayName)
                                             .font(isRegularWidth ? .callout : .caption2)
@@ -141,10 +217,31 @@ public struct AudioVisualizerView: View {
                                         get: { viewStore.selectedPreset },
                                         set: { viewStore.send(.presetSelected($0)) }
                                     )) {
-                                        ForEach(VisualizerPresetType.allCases) { preset in
-                                            Text(preset.displayName)
-                                                .font(isRegularWidth ? .callout : .caption2)
-                                                .tag(preset)
+                                        // Default presets section
+                                        Section {
+                                            ForEach(VisualizerPresetType.defaultPresets) { preset in
+                                                Text(preset.displayName)
+                                                    .font(isRegularWidth ? .callout : .caption2)
+                                                    .tag(preset)
+                                            }
+                                        }
+                                        
+                                        // HLSL presets section
+                                        Section {
+                                            ForEach(VisualizerPresetType.hlslPresets) { preset in
+                                                Text(preset.displayName)
+                                                    .font(isRegularWidth ? .callout : .caption2)
+                                                    .tag(preset)
+                                            }
+                                        }
+                                        
+                                        // MSL presets section
+                                        Section {
+                                            ForEach(VisualizerPresetType.mslPresets) { preset in
+                                                Text(preset.displayName)
+                                                    .font(isRegularWidth ? .callout : .caption2)
+                                                    .tag(preset)
+                                            }
                                         }
                                     }
                                     .pickerStyle(.menu)
@@ -256,6 +353,82 @@ public struct AudioVisualizerView: View {
                                             .foregroundColor(.secondary)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
+                                    
+                                case .displaceScale:
+                                    if viewStore.selectedPreset == .mslDisplace {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.mslDisplaceScale) },
+                                                set: { viewStore.send(.mslDisplaceScaleSelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 1.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    
+                                case .blurIntensity:
+                                    if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.blurIntensity) },
+                                                set: { viewStore.send(.blurIntensitySelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 1.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    
+                                case .echoIntensity:
+                                    if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.echoIntensity) },
+                                                set: { viewStore.send(.echoIntensitySelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 1.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    
+                                case .colorTransformIntensity:
+                                    if viewStore.selectedPreset == .hlslVisualizer || viewStore.selectedPreset == .mslVisualizer {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.colorTransformIntensity) },
+                                                set: { viewStore.send(.colorTransformIntensitySelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 1.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -309,6 +482,17 @@ public struct AudioVisualizerView: View {
                             selectedParameter = .preset
                         }
                     }
+                    .onChange(of: viewStore.selectedPreset) { oldValue, newValue in
+                        // If preset changed away from MSL Displace and we're on displaceScale, switch to preset
+                        if newValue != .mslDisplace && selectedParameter == .displaceScale {
+                            selectedParameter = .preset
+                        }
+                        // If preset changed away from HLSL/MSL Blur Echo and we're on blur/echo controls, switch to preset
+                        if (newValue != .hlslVisualizer && newValue != .mslVisualizer) &&
+                           (selectedParameter == .blurIntensity || selectedParameter == .echoIntensity || selectedParameter == .colorTransformIntensity) {
+                            selectedParameter = .preset
+                        }
+                    }
                     
                     // Visualizer preset view
                     let preset = viewStore.selectedPreset.preset
@@ -329,6 +513,10 @@ public struct AudioVisualizerView: View {
                             leftChannelSamples: viewStore.leftChannelSamples.isEmpty ? nil : viewStore.leftChannelSamples,
                             rightChannelSamples: viewStore.rightChannelSamples.isEmpty ? nil : viewStore.rightChannelSamples
                         )
+                        .environment(\.mslDisplaceScale, viewStore.mslDisplaceScale)
+                        .environment(\.blurIntensity, viewStore.blurIntensity)
+                        .environment(\.echoIntensity, viewStore.echoIntensity)
+                        .environment(\.colorTransformIntensity, viewStore.colorTransformIntensity)
                     )
                     
                     Spacer()

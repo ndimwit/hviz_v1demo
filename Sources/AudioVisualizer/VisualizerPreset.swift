@@ -38,8 +38,25 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
     case cameraVisualizer = "camera_visualizer"
     case hlslTest = "hlsl_test"
     case mslTest = "msl_test"
+    case mslDisplace = "msl_displace"
+    case mslWaveform = "msl_waveform"
     
     public var id: String { rawValue }
+    
+    /// Default presets (non-shader based)
+    public static var defaultPresets: [VisualizerPresetType] {
+        [.lineChart, .histogramBands, .oscilloscope, .stereoField, .quadrant, .cameraVisualizer]
+    }
+    
+    /// HLSL shader presets
+    public static var hlslPresets: [VisualizerPresetType] {
+        [.hlslVisualizer, .hlslTest]
+    }
+    
+    /// MSL shader presets
+    public static var mslPresets: [VisualizerPresetType] {
+        [.mslVisualizer, .mslTest, .mslDisplace, .mslWaveform]
+    }
     
     public var displayName: String {
         switch self {
@@ -54,15 +71,19 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
         case .quadrant:
             return "Quadrant View"
         case .hlslVisualizer:
-            return "HLSL Shader"
+            return "HLSL Blur Echo"
         case .mslVisualizer:
-            return "MSL Shader"
+            return "MSL Blur Echo"
         case .cameraVisualizer:
             return "Camera + Line Chart"
         case .hlslTest:
             return "HLSL Test (Simple)"
         case .mslTest:
             return "MSL Test (Simple)"
+        case .mslDisplace:
+            return "MSL Displace"
+        case .mslWaveform:
+            return "MSL Waveform"
         }
     }
     
@@ -88,6 +109,10 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
             return HLSLTestPreset()
         case .mslTest:
             return MSLTestPreset()
+        case .mslDisplace:
+            return MSLDisplacePreset()
+        case .mslWaveform:
+            return MSLWaveformPreset()
         }
     }
 }

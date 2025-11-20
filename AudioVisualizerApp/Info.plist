@@ -26,6 +26,8 @@
 	<string>This app needs access to your microphone to visualize live audio waveforms.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs access to your camera to display a live video feed with audio visualization overlay.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>This app needs screen recording permission to access virtual cameras like OBS Virtual Camera.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

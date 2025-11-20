@@ -2,11 +2,11 @@ import SwiftUI
 import MetalKit
 import Metal
 
-/// MSL (Metal Shader Language) visualizer preset
-/// Direct Metal shader implementation for histogram bands visualization
+/// MSL (Metal Shader Language) visualizer preset with blur & echo effect
+/// Direct Metal shader implementation for histogram bands visualization with downward blur/echo and color transformation
 public struct MSLVisualizerPreset: VisualizerPreset {
     public let id = "msl_visualizer"
-    public let displayName = "MSL Shader"
+    public let displayName = "MSL Blur Echo"
     
     @ViewBuilder
     public func makeView(
@@ -35,7 +35,7 @@ public struct MSLVisualizerPreset: VisualizerPreset {
     }
 }
 
-/// Metal view for MSL shader visualization
+/// Metal view for MSL shader visualization with blur/echo
 private struct MSLMetalView: UIViewRepresentable {
     let magnitudes: [Float]
     let maxMagnitude: Float
@@ -43,6 +43,10 @@ private struct MSLMetalView: UIViewRepresentable {
     let availableWidth: CGFloat
     let horizontalPadding: CGFloat
     let isRegularWidth: Bool
+    
+    @Environment(\.blurIntensity) var blurIntensity
+    @Environment(\.echoIntensity) var echoIntensity
+    @Environment(\.colorTransformIntensity) var colorTransformIntensity
     
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView()
@@ -67,7 +71,10 @@ private struct MSLMetalView: UIViewRepresentable {
             chartHeight: chartHeight,
             availableWidth: availableWidth,
             horizontalPadding: horizontalPadding,
-            isRegularWidth: isRegularWidth
+            isRegularWidth: isRegularWidth,
+            blurIntensity: blurIntensity,
+            echoIntensity: echoIntensity,
+            colorTransformIntensity: colorTransformIntensity
         )
         
         return mtkView
@@ -80,7 +87,10 @@ private struct MSLMetalView: UIViewRepresentable {
             chartHeight: chartHeight,
             availableWidth: availableWidth,
             horizontalPadding: horizontalPadding,
-            isRegularWidth: isRegularWidth
+            isRegularWidth: isRegularWidth,
+            blurIntensity: blurIntensity,
+            echoIntensity: echoIntensity,
+            colorTransformIntensity: colorTransformIntensity
         )
     }
     
@@ -91,9 +101,17 @@ private struct MSLMetalView: UIViewRepresentable {
     class Coordinator: NSObject, MTKViewDelegate {
         var device: MTLDevice!
         var commandQueue: MTLCommandQueue!
-        var renderPipelineState: MTLRenderPipelineState!
-        var computePipelineState: MTLComputePipelineState!
+        var histogramRenderPipelineState: MTLRenderPipelineState!
+        var blurEchoRenderPipelineState: MTLRenderPipelineState!
         var library: MTLLibrary!
+        
+        // Feedback textures for echo effect (double buffering)
+        var feedbackTexture1: MTLTexture!
+        var feedbackTexture2: MTLTexture!
+        var currentFeedbackTexture: MTLTexture?
+        var nextFeedbackTexture: MTLTexture?
+        var intermediateTexture: MTLTexture!
+        var samplerState: MTLSamplerState!
         
         var magnitudes: [Float] = []
         var maxMagnitude: Float = 1.0
@@ -102,7 +120,9 @@ private struct MSLMetalView: UIViewRepresentable {
         var horizontalPadding: CGFloat = 16
         var isRegularWidth: Bool = true
         var time: Float = 0.0
-        var viewportSize: SIMD2<Float> = SIMD2<Float>(400, 200)
+        var blurIntensity: Float = 0.5
+        var echoIntensity: Float = 0.5
+        var colorTransformIntensity: Float = 0.3
         
         func setupMetal(device: MTLDevice, view: MTKView) {
             self.device = device
@@ -113,163 +133,182 @@ private struct MSLMetalView: UIViewRepresentable {
             }
             self.commandQueue = commandQueue
             
-            // Load shader library - try default library first
-            var library: MTLLibrary?
-            
-            // Try default library (works when Metal files are compiled into the bundle)
-            library = device.makeDefaultLibrary()
-            
-            // If default library fails, try compiling from embedded source
-            if library == nil {
-                let shaderSource = """
-                #include <metal_stdlib>
-                using namespace metal;
-                
-                struct VertexIn {
-                    float2 position;
-                    float magnitude;
-                    float frequencyIndex;
-                };
-                
-                struct VertexOut {
-                    float4 position [[position]];
-                    float magnitude;
-                    float frequencyIndex;
-                    float2 uv;
-                };
-                
-                vertex VertexOut mslHistogramVertex(
-                    device const VertexIn* vertices [[buffer(0)]],
-                    constant float2& viewportSize [[buffer(1)]],
-                    uint vid [[vertex_id]]
-                ) {
-                    VertexOut out;
-                    VertexIn in = vertices[vid];
-                    float2 pos = (in.position / viewportSize) * 2.0 - 1.0;
-                    pos.y = -pos.y;
-                    out.position = float4(pos, 0.0, 1.0);
-                    out.magnitude = in.magnitude;
-                    out.frequencyIndex = in.frequencyIndex;
-                    out.uv = in.position / viewportSize;
-                    return out;
-                }
-                
-                fragment float4 mslHistogramFragment(
-                    VertexOut in [[stage_in]],
-                    constant float& time [[buffer(0)]],
-                    constant float& maxMagnitude [[buffer(1)]]
-                ) {
-                    float normalizedMag = in.magnitude / max(maxMagnitude, 0.001);
-                    float colorIndex = in.frequencyIndex;
-                    float3 baseColor = float3(
-                        min(1.0, colorIndex * 2.0),
-                        sin(colorIndex * 3.14159) * 0.5,
-                        max(0.0, 1.0 - colorIndex * 2.0)
-                    );
-                    float pulse = sin(time * 3.0 + in.frequencyIndex * 10.0) * 0.15 + 0.85;
-                    float magnitudePulse = normalizedMag * 0.3 + 0.7;
-                    float gradient = in.uv.y;
-                    float3 color = baseColor * pulse * magnitudePulse;
-                    color += float3(0.1, 0.1, 0.2) * (1.0 - gradient);
-                    float glow = smoothstep(0.7, 1.0, normalizedMag);
-                    color += float3(0.3, 0.3, 0.5) * glow;
-                    return float4(color, 1.0);
-                }
-                
-                kernel void mslProcessAudio(
-                    device const float* magnitudes [[buffer(0)]],
-                    device VertexIn* vertices [[buffer(1)]],
-                    constant uint& count [[buffer(2)]],
-                    constant float2& viewportSize [[buffer(3)]],
-                    constant float& maxMagnitude [[buffer(4)]],
-                    constant float& barWidth [[buffer(5)]],
-                    constant float& barSpacing [[buffer(6)]],
-                    constant float& chartHeight [[buffer(7)]],
-                    uint id [[thread_position_in_grid]]
-                ) {
-                    if (id >= count) return;
-                    float magnitude = magnitudes[id];
-                    float normalizedMag = magnitude / max(maxMagnitude, 0.001);
-                    float xPos = float(id) * (barWidth + barSpacing) + barWidth * 0.5;
-                    float barHeight = normalizedMag * chartHeight;
-                    float frequencyIndex = float(id) / float(max(count - 1u, 1u));
-                    vertices[id * 4 + 0] = VertexIn{float2(xPos - barWidth * 0.5, 0.0), normalizedMag, frequencyIndex};
-                    vertices[id * 4 + 1] = VertexIn{float2(xPos + barWidth * 0.5, 0.0), normalizedMag, frequencyIndex};
-                    vertices[id * 4 + 2] = VertexIn{float2(xPos + barWidth * 0.5, barHeight), normalizedMag, frequencyIndex};
-                    vertices[id * 4 + 3] = VertexIn{float2(xPos - barWidth * 0.5, barHeight), normalizedMag, frequencyIndex};
-                }
-                """
-                
-                do {
-                    library = try device.makeLibrary(source: shaderSource, options: nil)
-                    print("✓ Metal library compiled from embedded source")
-                } catch {
-                    print("ERROR: Failed to compile Metal library from embedded source: \(error)")
-                }
-            }
-            
-            guard let finalLibrary = library else {
-                print("ERROR: Failed to create Metal library")
-                print("  - Device: \(device.name)")
-                print("  - Check that Metal shader files (.metal) are in the source directory")
-                print("  - Verify Metal shaders compile without errors")
-                return
-            }
-            self.library = finalLibrary
-            print("✓ Metal library loaded successfully")
-            
-            // Create compute pipeline
-            guard let computeFunction = finalLibrary.makeFunction(name: "mslProcessAudio") else {
-                print("Warning: mslProcessAudio function not found, using fallback rendering")
-                return
-            }
-            
-            do {
-                computePipelineState = try device.makeComputePipelineState(function: computeFunction)
-            } catch {
-                print("Failed to create compute pipeline: \(error)")
-            }
-            
-            // Create a simpler render pipeline that actually works
-            let simpleShaderSource = """
+            // Create shader library with blur/echo shaders
+            let shaderSource = """
             #include <metal_stdlib>
             using namespace metal;
             
             struct VertexOut {
                 float4 position [[position]];
+                float2 uv;
+            };
+            
+            // Vertex shader for full-screen quad
+            vertex VertexOut fullScreenVertex(uint vid [[vertex_id]]) {
+                VertexOut out;
+                float2 positions[4] = {
+                    float2(-1.0, -1.0),
+                    float2( 1.0, -1.0),
+                    float2(-1.0,  1.0),
+                    float2( 1.0,  1.0)
+                };
+                float2 uvs[4] = {
+                    float2(0.0, 1.0),
+                    float2(1.0, 1.0),
+                    float2(0.0, 0.0),
+                    float2(1.0, 0.0)
+                };
+                out.position = float4(positions[vid], 0.0, 1.0);
+                out.uv = uvs[vid];
+                return out;
+            }
+            
+            // Simple vertex shader for bars
+            struct BarVertexOut {
+                float4 position [[position]];
                 float4 color;
             };
             
-            vertex VertexOut barVertex(constant float4* vertices [[buffer(0)]],
-                                      constant float4* colors [[buffer(1)]],
-                                      uint vid [[vertex_id]]) {
-                VertexOut out;
+            vertex BarVertexOut barVertex(constant float4* vertices [[buffer(0)]],
+                                         constant float4* colors [[buffer(1)]],
+                                         uint vid [[vertex_id]]) {
+                BarVertexOut out;
                 out.position = vertices[vid];
                 out.color = colors[vid];
                 return out;
             }
             
-            fragment float4 barFragment(VertexOut in [[stage_in]]) {
+            fragment float4 barFragment(BarVertexOut in [[stage_in]]) {
                 return in.color;
+            }
+            
+            // Fragment shader for blur/echo effect with color transformation
+            fragment float4 blurEchoFragment(VertexOut in [[stage_in]],
+                                            texture2d<float> currentFrame [[texture(0)]],
+                                            texture2d<float> feedbackTexture [[texture(1)]],
+                                            constant float& blurIntensity [[buffer(0)]],
+                                            constant float& echoIntensity [[buffer(1)]],
+                                            constant float& colorTransformIntensity [[buffer(2)]],
+                                            constant float2& textureSize [[buffer(3)]],
+                                            sampler textureSampler [[sampler(0)]]) {
+                float2 uv = in.uv;
+                
+                // Sample current frame
+                float4 current = currentFrame.sample(textureSampler, uv);
+                
+                // Calculate downward stretch offset (sample from above to stretch down)
+                // blurIntensity controls how much we stretch (0.0 = no stretch, 1.0 = maximum stretch)
+                float stretchAmount = blurIntensity * 0.1; // Maximum 10% of texture height
+                
+                // Sample from feedback texture at position above current pixel (stretching downward)
+                float2 feedbackUV = uv;
+                feedbackUV.y = clamp(uv.y - stretchAmount, 0.0, 1.0);
+                
+                // Sample multiple points for blur effect (vertical blur)
+                float4 smeared = float4(0.0);
+                int blurSamples = 5;
+                float blurStep = blurIntensity * 0.02;
+                float totalWeight = 0.0;
+                
+                for (int i = 0; i < blurSamples; i++) {
+                    float2 sampleUV = feedbackUV;
+                    float offset = (float(i) - float(blurSamples) * 0.5) * blurStep;
+                    sampleUV.y = clamp(feedbackUV.y + offset, 0.0, 1.0);
+                    
+                    float4 sample = feedbackTexture.sample(textureSampler, sampleUV);
+                    
+                    // Apply accumulated color transformation to feedback (increases over layers)
+                    float3 sampleColor = sample.rgb;
+                    
+                    // Darken (accumulated - stronger for older layers)
+                    float darkenAmount = colorTransformIntensity * 0.3;
+                    sampleColor *= (1.0 - darkenAmount);
+                    
+                    // Invert (accumulated)
+                    float3 inverted = 1.0 - sampleColor;
+                    sampleColor = mix(sampleColor, inverted, colorTransformIntensity * 0.4);
+                    
+                    // Weight by distance from center (gaussian-like)
+                    float weight = 1.0 - abs(offset) / (blurStep * float(blurSamples) * 0.5);
+                    weight = max(0.0, weight);
+                    
+                    smeared += float4(sampleColor, sample.a) * weight;
+                    totalWeight += weight;
+                }
+                
+                if (totalWeight > 0.0) {
+                    smeared /= totalWeight;
+                }
+                
+                // Apply opacity to smeared content for perceptual layering
+                float smearedOpacity = echoIntensity * 0.85; // Max 85% opacity for layering
+                
+                // Blend: current frame on top, smeared feedback behind
+                // Standard alpha blending: result = foreground + background * (1 - foreground.a)
+                float4 result;
+                
+                // If current frame has content, blend it on top
+                if (current.a > 0.01) {
+                    // Current frame is foreground, smeared is background
+                    result.rgb = current.rgb * current.a + smeared.rgb * (1.0 - current.a) * smearedOpacity;
+                    result.a = current.a + smeared.a * (1.0 - current.a) * smearedOpacity;
+                } else {
+                    // No current content, use smeared content to fill background
+                    result.rgb = smeared.rgb;
+                    result.a = smeared.a * smearedOpacity;
+                }
+                
+                return result;
             }
             """
             
-            // Try to use the simple shader
-            if let simpleLibrary = try? device.makeLibrary(source: simpleShaderSource, options: nil),
-               let vertexFunc = simpleLibrary.makeFunction(name: "barVertex"),
-               let fragmentFunc = simpleLibrary.makeFunction(name: "barFragment") {
+            do {
+                library = try device.makeLibrary(source: shaderSource, options: nil)
+                print("✓ MSL Blur Echo Metal library compiled successfully")
+            } catch {
+                print("ERROR: Failed to compile Metal library: \(error)")
+                return
+            }
+            
+            // Create histogram render pipeline (renders bars to texture)
+            if let vertexFunc = library.makeFunction(name: "barVertex"),
+               let fragmentFunc = library.makeFunction(name: "barFragment") {
+                let pipelineDescriptor = MTLRenderPipelineDescriptor()
+                pipelineDescriptor.vertexFunction = vertexFunc
+                pipelineDescriptor.fragmentFunction = fragmentFunc
+                pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+                
+                do {
+                    histogramRenderPipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+                    print("✓ MSL Histogram render pipeline created")
+                } catch {
+                    print("ERROR: Failed to create histogram render pipeline: \(error)")
+                }
+            }
+            
+            // Create blur/echo render pipeline
+            if let vertexFunc = library.makeFunction(name: "fullScreenVertex"),
+               let fragmentFunc = library.makeFunction(name: "blurEchoFragment") {
                 let pipelineDescriptor = MTLRenderPipelineDescriptor()
                 pipelineDescriptor.vertexFunction = vertexFunc
                 pipelineDescriptor.fragmentFunction = fragmentFunc
                 pipelineDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
                 
                 do {
-                    renderPipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-                    print("✓ MSL Simple render pipeline created successfully")
+                    blurEchoRenderPipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+                    print("✓ MSL Blur/Echo render pipeline created")
                 } catch {
-                    print("Failed to create MSL simple render pipeline: \(error)")
+                    print("ERROR: Failed to create blur/echo render pipeline: \(error)")
                 }
             }
+            
+            // Create sampler state
+            let samplerDescriptor = MTLSamplerDescriptor()
+            samplerDescriptor.minFilter = .linear
+            samplerDescriptor.magFilter = .linear
+            samplerDescriptor.sAddressMode = .clampToEdge
+            samplerDescriptor.tAddressMode = .clampToEdge
+            samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
         }
         
         func updateData(
@@ -278,7 +317,10 @@ private struct MSLMetalView: UIViewRepresentable {
             chartHeight: CGFloat,
             availableWidth: CGFloat,
             horizontalPadding: CGFloat,
-            isRegularWidth: Bool
+            isRegularWidth: Bool,
+            blurIntensity: Float,
+            echoIntensity: Float,
+            colorTransformIntensity: Float
         ) {
             self.magnitudes = magnitudes
             self.maxMagnitude = maxMagnitude
@@ -286,58 +328,105 @@ private struct MSLMetalView: UIViewRepresentable {
             self.availableWidth = availableWidth
             self.horizontalPadding = horizontalPadding
             self.isRegularWidth = isRegularWidth
-            self.viewportSize = SIMD2<Float>(Float(availableWidth), Float(chartHeight))
+            self.blurIntensity = blurIntensity
+            self.echoIntensity = echoIntensity
+            self.colorTransformIntensity = colorTransformIntensity
+        }
+        
+        func ensureTextures(size: CGSize) {
+            let width = Int(size.width)
+            let height = Int(size.height)
+            
+            if feedbackTexture1 == nil || feedbackTexture1.width != width || feedbackTexture1.height != height {
+                let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .bgra8Unorm,
+                    width: width,
+                    height: height,
+                    mipmapped: false
+                )
+                textureDescriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+                
+                feedbackTexture1 = device.makeTexture(descriptor: textureDescriptor)
+                feedbackTexture2 = device.makeTexture(descriptor: textureDescriptor)
+                intermediateTexture = device.makeTexture(descriptor: textureDescriptor)
+                
+                currentFeedbackTexture = feedbackTexture1
+                nextFeedbackTexture = feedbackTexture2
+                
+                // Textures will be cleared on first render pass
+            }
         }
         
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-            viewportSize = SIMD2<Float>(Float(size.width), Float(size.height))
+            // Textures will be recreated in draw if size changes
+            feedbackTexture1 = nil
+            feedbackTexture2 = nil
+            intermediateTexture = nil
+            currentFeedbackTexture = nil
+            nextFeedbackTexture = nil
         }
         
         func draw(in view: MTKView) {
             guard let drawable = view.currentDrawable,
                   let renderPassDescriptor = view.currentRenderPassDescriptor,
-                  let commandBuffer = commandQueue.makeCommandBuffer() else {
+                  let commandBuffer = commandQueue.makeCommandBuffer(),
+                  let histogramPipeline = histogramRenderPipelineState,
+                  let blurEchoPipeline = blurEchoRenderPipelineState,
+                  let samplerState = samplerState else {
                 return
             }
             
             time += 0.016
             
-            // Fallback to CPU-based rendering if Metal setup failed
-            guard let renderPipeline = renderPipelineState else {
-                // Use simplified rendering
+            let drawableSize = view.drawableSize
+            ensureTextures(size: drawableSize)
+            
+            guard let intermediateTexture = intermediateTexture,
+                  let currentFeedbackTexture = currentFeedbackTexture,
+                  let nextFeedbackTexture = nextFeedbackTexture else {
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
                 return
             }
             
+            guard !magnitudes.isEmpty else {
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
+                return
+            }
+            
+            // PASS 1: Render histogram bars to intermediate texture
+            let intermediateRenderPass = MTLRenderPassDescriptor()
+            intermediateRenderPass.colorAttachments[0].texture = intermediateTexture
+            intermediateRenderPass.colorAttachments[0].loadAction = .clear
+            intermediateRenderPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            intermediateRenderPass.colorAttachments[0].storeAction = .store
+            
+            guard let histogramEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: intermediateRenderPass) else {
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
+                return
+            }
+            
+            // Render histogram bars
             let chartWidth = availableWidth - (horizontalPadding * 2)
             let minBarWidth: CGFloat = isRegularWidth ? 2 : 1
             let barSpacing: CGFloat = isRegularWidth ? 2 : 1
             let maxBars = max(1, Int((chartWidth + barSpacing) / (minBarWidth + barSpacing)))
             let targetBarCount = min(maxBars, magnitudes.count)
             
-            if targetBarCount == 0 || magnitudes.isEmpty {
-                commandBuffer.present(drawable)
-                commandBuffer.commit()
-                return
-            }
-            
-            // Downsample magnitudes
             let downsampledMagnitudes = downsampleMagnitudes(magnitudes, to: targetBarCount)
-            
-            // Create vertex and color data for bars
-            var vertices: [SIMD4<Float>] = []
-            var colors: [SIMD4<Float>] = []
-            
             let barWidth = (chartWidth - CGFloat(targetBarCount - 1) * barSpacing) / CGFloat(targetBarCount)
-            let drawableSize = view.drawableSize
             let viewWidth = max(Float(drawableSize.width), 1.0)
             let viewHeight = max(Float(drawableSize.height), 1.0)
             
-            // Convert to normalized device coordinates
             func toNDC(x: CGFloat, y: CGFloat) -> SIMD4<Float> {
                 let ndcX = (Float(x) / viewWidth) * 2.0 - 1.0
-                let ndcY = 1.0 - (Float(y) / viewHeight) * 2.0 // Flip Y
+                let ndcY = 1.0 - (Float(y) / viewHeight) * 2.0
                 return SIMD4<Float>(ndcX, ndcY, 0.0, 1.0)
             }
+            
+            histogramEncoder.setRenderPipelineState(histogramPipeline)
             
             for (index, magnitude) in downsampledMagnitudes.enumerated() {
                 let normalizedHeight = CGFloat(magnitude / maxMagnitude)
@@ -345,7 +434,7 @@ private struct MSLMetalView: UIViewRepresentable {
                 let xPos = CGFloat(index) * (barWidth + barSpacing) + horizontalPadding
                 let frequencyIndex = Float(index) / Float(max(targetBarCount - 1, 1))
                 
-                // Enhanced color based on frequency (similar to MSL shader)
+                // Enhanced color based on frequency (similar to original MSL shader)
                 let colorIndex = Double(frequencyIndex)
                 let baseColor = SIMD3<Float>(
                     Float(min(1.0, colorIndex * 2.0)),
@@ -355,7 +444,7 @@ private struct MSLMetalView: UIViewRepresentable {
                 
                 // Add pulsing effect
                 let pulse = sin(time * 3.0 + frequencyIndex * 10.0) * 0.15 + 0.85
-                let color = SIMD4<Float>(baseColor * pulse, 1.0)
+                var color = SIMD4<Float>(baseColor * pulse, 1.0)
                 
                 // Create rectangle as two triangles
                 let bottomLeft = toNDC(x: xPos, y: 0)
@@ -363,47 +452,93 @@ private struct MSLMetalView: UIViewRepresentable {
                 let topRight = toNDC(x: xPos + barWidth, y: barHeight)
                 let topLeft = toNDC(x: xPos, y: barHeight)
                 
-                // Triangle 1
-                vertices.append(bottomLeft)
-                vertices.append(bottomRight)
-                vertices.append(topLeft)
-                colors.append(color)
-                colors.append(color)
-                colors.append(color)
+                let vertices: [SIMD4<Float>] = [
+                    bottomLeft, bottomRight, topLeft,
+                    bottomRight, topRight, topLeft
+                ]
                 
-                // Triangle 2
-                vertices.append(bottomRight)
-                vertices.append(topRight)
-                vertices.append(topLeft)
-                colors.append(color)
-                colors.append(color)
-                colors.append(color)
+                guard let vertexBuffer = device.makeBuffer(
+                    bytes: vertices,
+                    length: vertices.count * MemoryLayout<SIMD4<Float>>.stride,
+                    options: []
+                ) else { continue }
+                
+                guard let colorBuffer = device.makeBuffer(
+                    bytes: [color, color, color, color, color, color],
+                    length: 6 * MemoryLayout<SIMD4<Float>>.stride,
+                    options: []
+                ) else { continue }
+                
+                histogramEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+                histogramEncoder.setVertexBuffer(colorBuffer, offset: 0, index: 1)
+                histogramEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
             }
             
-            guard !vertices.isEmpty, let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+            histogramEncoder.endEncoding()
+            
+            // PASS 2: Apply blur/echo effect and render to screen + update feedback texture
+            guard let blurEchoEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
                 commandBuffer.present(drawable)
                 commandBuffer.commit()
                 return
             }
             
-            // Create buffers
-            let vertexBuffer = device.makeBuffer(
-                bytes: vertices,
-                length: vertices.count * MemoryLayout<SIMD4<Float>>.stride,
-                options: []
-            )
+            // Full-screen quad vertices
+            let quadVertices: [SIMD4<Float>] = [
+                SIMD4<Float>(-1.0, -1.0, 0.0, 1.0),
+                SIMD4<Float>( 1.0, -1.0, 0.0, 1.0),
+                SIMD4<Float>(-1.0,  1.0, 0.0, 1.0),
+                SIMD4<Float>( 1.0,  1.0, 0.0, 1.0)
+            ]
             
-            let colorBuffer = device.makeBuffer(
-                bytes: colors,
-                length: colors.count * MemoryLayout<SIMD4<Float>>.stride,
+            guard let quadVertexBuffer = device.makeBuffer(
+                bytes: quadVertices,
+                length: quadVertices.count * MemoryLayout<SIMD4<Float>>.stride,
                 options: []
-            )
+            ) else {
+                blurEchoEncoder.endEncoding()
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
+                return
+            }
             
-            renderEncoder.setRenderPipelineState(renderPipeline)
-            renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-            renderEncoder.setVertexBuffer(colorBuffer, offset: 0, index: 1)
-            renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count)
-            renderEncoder.endEncoding()
+            var blurInt = blurIntensity
+            var echoInt = echoIntensity
+            var colorTransformInt = colorTransformIntensity
+            var textureSize = SIMD2<Float>(Float(drawableSize.width), Float(drawableSize.height))
+            
+            blurEchoEncoder.setRenderPipelineState(blurEchoPipeline)
+            blurEchoEncoder.setVertexBuffer(quadVertexBuffer, offset: 0, index: 0)
+            blurEchoEncoder.setFragmentTexture(intermediateTexture, index: 0)
+            blurEchoEncoder.setFragmentTexture(currentFeedbackTexture, index: 1)
+            blurEchoEncoder.setFragmentSamplerState(samplerState, index: 0)
+            blurEchoEncoder.setFragmentBytes(&blurInt, length: MemoryLayout<Float>.stride, index: 0)
+            blurEchoEncoder.setFragmentBytes(&echoInt, length: MemoryLayout<Float>.stride, index: 1)
+            blurEchoEncoder.setFragmentBytes(&colorTransformInt, length: MemoryLayout<Float>.stride, index: 2)
+            blurEchoEncoder.setFragmentBytes(&textureSize, length: MemoryLayout<SIMD2<Float>>.stride, index: 3)
+            blurEchoEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            blurEchoEncoder.endEncoding()
+            
+            // Copy result to feedback texture for next frame
+            if let blitEncoder = commandBuffer.makeBlitCommandEncoder() {
+                blitEncoder.copy(
+                    from: drawable.texture,
+                    sourceSlice: 0,
+                    sourceLevel: 0,
+                    sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                    sourceSize: MTLSize(width: Int(drawableSize.width), height: Int(drawableSize.height), depth: 1),
+                    to: nextFeedbackTexture,
+                    destinationSlice: 0,
+                    destinationLevel: 0,
+                    destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+                )
+                blitEncoder.endEncoding()
+            }
+            
+            // Swap feedback textures
+            let temp = self.currentFeedbackTexture
+            self.currentFeedbackTexture = self.nextFeedbackTexture
+            self.nextFeedbackTexture = temp
             
             commandBuffer.present(drawable)
             commandBuffer.commit()
@@ -435,4 +570,3 @@ private struct MSLMetalView: UIViewRepresentable {
         }
     }
 }
-
