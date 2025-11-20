@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Configuration constants for audio waveform visualization
 public enum Constants {
@@ -14,14 +17,22 @@ public enum Constants {
     /// Available buffer sizes for FFT (must be powers of 2)
     public static let availableBufferSizes: [Int] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
     
-    /// Default buffer size
-    public static let defaultBufferSize: Int = 512
+    /// Default buffer size (platform-specific: 2048 for iPhone, 512 for others)
+    public static var defaultBufferSize: Int {
+        #if canImport(UIKit) && !targetEnvironment(macCatalyst)
+        // Check if running on iPhone (not iPad)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            return 2048
+        }
+        #endif
+        return 512
+    }
     
     /// Available FFT window sizes (must be powers of 2, starting from 8)
     public static let availableFFTWindowSizes: [Int] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
     
     /// Default FFT window size
-    public static let defaultFFTWindowSize: Int = 512
+    public static let defaultFFTWindowSize: Int = 256
     
     /// Available FFT band quantities (number of frequency bands to display)
     /// Matches availableBufferSizes to keep them in sync
