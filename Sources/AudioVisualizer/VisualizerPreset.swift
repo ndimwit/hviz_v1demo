@@ -346,7 +346,8 @@ public struct OscilloscopePreset: VisualizerPreset {
     ) -> any View {
         if renderingMode == .scrolling, let scrollingFrames = scrollingData, !scrollingFrames.isEmpty {
             // Scrolling mode: display as horizontal scrolling waveform
-            // Each column represents a time point, showing waveform amplitude vertically
+            // Each frame contains a single sample, displayed as a vertical line
+            // New samples are introduced on the right, pushing old ones left
             GeometryReader { geometry in
                 let chartWidth = geometry.size.width - (horizontalPadding * 2)
                 let frameWidth = max(1.0, chartWidth / CGFloat(scrollingFrames.count))
@@ -358,29 +359,27 @@ public struct OscilloscopePreset: VisualizerPreset {
                 HStack(spacing: 0) {
                     ForEach(scrollingFrames.indices, id: \.self) { frameIndex in
                         let frame = scrollingFrames[frameIndex]
-                        // Downsample to fit vertical resolution
-                        let downsampledFrame = downsampleMagnitudes(frame, to: Int(chartHeight))
+                        // Each frame should contain a single sample for oscilloscope scrolling
+                        let sample = frame.first ?? 0.0
                         
-                        // Draw vertical slice of waveform (centered)
+                        // Draw vertical line at sample amplitude (0 in the middle)
                         GeometryReader { frameGeometry in
                             Path { path in
                                 let width = frameGeometry.size.width
                                 let height = frameGeometry.size.height
                                 let centerX = width / 2
+                                let centerY = height / 2
                                 
-                                if !downsampledFrame.isEmpty {
-                                    let stepY = height / CGFloat(downsampledFrame.count - 1)
-                                    
-                                    for (index, sample) in downsampledFrame.enumerated() {
-                                        let normalizedSample = CGFloat(sample / normalizedMaxAmplitude)
-                                        let x = centerX + (normalizedSample * width / 2)
-                                        let y = height - CGFloat(index) * stepY
-                                        
-                                        // Draw line from center to sample position
-                                        path.move(to: CGPoint(x: centerX, y: y))
-                                        path.addLine(to: CGPoint(x: x, y: y))
-                                    }
-                                }
+                                // Normalize sample to [-1, 1] range based on max amplitude
+                                let normalizedSample = CGFloat(sample / normalizedMaxAmplitude)
+                                
+                                // Calculate y position: 0 is at center, positive goes up, negative goes down
+                                // In SwiftUI, y=0 is at top, so we invert
+                                let yPosition = centerY - (normalizedSample * height / 2)
+                                
+                                // Draw vertical line from center (0) to sample position
+                                path.move(to: CGPoint(x: centerX, y: centerY))
+                                path.addLine(to: CGPoint(x: centerX, y: yPosition))
                             }
                             .stroke(
                                 LinearGradient(
@@ -388,7 +387,7 @@ public struct OscilloscopePreset: VisualizerPreset {
                                     startPoint: .top,
                                     endPoint: .bottom
                                 ),
-                                lineWidth: isRegularWidth ? 1 : 0.5
+                                lineWidth: isRegularWidth ? 1.5 : 1
                             )
                         }
                         .frame(width: frameWidth)

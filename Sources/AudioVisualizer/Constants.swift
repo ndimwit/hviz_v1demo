@@ -42,6 +42,9 @@ public enum Constants {
     /// Default scrolling frame limit
     public static let defaultScrollingFrameLimit: Int = 16
     
+    /// Available scrolling frame limit sizes for Oscilloscope (up to 32k)
+    public static let availableOscilloscopeScrollingFrameLimits: [Int] = [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+    
     /// Calculate required FFT buffer size from desired number of bands
     /// For a real FFT, we get N/2+1 bins from N samples
     /// To get at least 'bands' bins, we need at least 2*bands-2 samples

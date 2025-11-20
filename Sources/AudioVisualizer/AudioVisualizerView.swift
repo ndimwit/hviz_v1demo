@@ -222,22 +222,38 @@ public struct AudioVisualizerView: View {
                             }
                             
                             // Frame limit selector (only visible in scrolling mode)
+                            // For Oscilloscope, use larger frame limits (up to 32k)
+                            // For other presets, use standard frame limits
                             HStack(spacing: 4) {
                                 Text("Frames:")
                                     .font(isRegularWidth ? .body : .caption)
                                     .foregroundColor(.secondary)
                                 
-                                Picker("Frame Limit", selection: Binding(
-                                    get: { viewStore.maxScrollingFrames },
-                                    set: { viewStore.send(.maxScrollingFramesSelected($0)) }
-                                )) {
-                                    ForEach(Constants.availableScrollingFrameLimits, id: \.self) { limit in
-                                        Text("\(limit)")
-                                            .tag(limit)
+                                if viewStore.selectedPreset == .oscilloscope {
+                                    Picker("Frame Limit", selection: Binding(
+                                        get: { viewStore.maxScrollingFrames },
+                                        set: { viewStore.send(.maxScrollingFramesSelected($0)) }
+                                    )) {
+                                        ForEach(Constants.availableOscilloscopeScrollingFrameLimits, id: \.self) { limit in
+                                            Text("\(limit)")
+                                                .tag(limit)
+                                        }
                                     }
+                                    .pickerStyle(.menu)
+                                    .frame(maxWidth: isRegularWidth ? 100 : 80)
+                                } else {
+                                    Picker("Frame Limit", selection: Binding(
+                                        get: { viewStore.maxScrollingFrames },
+                                        set: { viewStore.send(.maxScrollingFramesSelected($0)) }
+                                    )) {
+                                        ForEach(Constants.availableScrollingFrameLimits, id: \.self) { limit in
+                                            Text("\(limit)")
+                                                .tag(limit)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .frame(maxWidth: isRegularWidth ? 80 : 60)
                                 }
-                                .pickerStyle(.menu)
-                                .frame(maxWidth: isRegularWidth ? 80 : 60)
                             }
                         }
                         

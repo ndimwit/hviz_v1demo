@@ -81,6 +81,10 @@ public struct AudioVisualizerFeature: Reducer {
         /// Number of samples to compare for detecting new data (overlap window)
         private let overlapWindowSize = 512
         
+        /// Last seen raw audio samples for oscilloscope scrolling mode
+        /// Used to detect new samples since last frame update
+        private var lastSeenOscilloscopeSamples: [Float] = []
+        
         /// Current frame rate (FPS) - rounded to 1 decimal place
         public var frameRate: Double = 0.0
         
@@ -215,40 +219,118 @@ public struct AudioVisualizerFeature: Reducer {
             
             // For scrolling mode, determine which data to store based on preset
             // Oscilloscope uses rawSamples (time-domain), others use displayMagnitudes (frequency-domain)
-            let currentFrame: [Float]
             switch selectedPreset {
             case .oscilloscope:
-                // Oscilloscope: use raw audio samples for time-domain visualization
-                currentFrame = rawSamples.isEmpty ? displayMagnitudes : rawSamples
+                // Oscilloscope: store individual samples, introducing new ones since last frame
+                let samplesToProcess = rawSamples.isEmpty ? displayMagnitudes : rawSamples
+                
+                if !samplesToProcess.isEmpty {
+                    // Initialize buffer to fixed size if needed
+                    if scrollingBuffer.count < maxScrollingFrames {
+                        scrollingBuffer.reserveCapacity(maxScrollingFrames)
+                        while scrollingBuffer.count < maxScrollingFrames {
+                            scrollingBuffer.append([])
+                        }
+                    }
+                    
+                    // Detect new samples since last update
+                    // Find where the tail of lastSeenOscilloscopeSamples overlaps with the beginning of samplesToProcess
+                    let newSamples: [Float]
+                    if lastSeenOscilloscopeSamples.isEmpty {
+                        // First time - use all samples
+                        newSamples = samplesToProcess
+                    } else {
+                        // Find the longest matching suffix of lastSeen that matches a prefix of current
+                        let lastSeenTail = Array(lastSeenOscilloscopeSamples.suffix(min(overlapWindowSize, lastSeenOscilloscopeSamples.count)))
+                        let searchWindow = min(overlapWindowSize, samplesToProcess.count)
+                        
+                        var bestMatchLength = 0
+                        // Try different suffix lengths from lastSeenTail
+                        for suffixLength in 1...min(lastSeenTail.count, searchWindow) {
+                            let suffix = Array(lastSeenTail.suffix(suffixLength))
+                            let prefix = Array(samplesToProcess.prefix(suffixLength))
+                            
+                            // Check if they match (with tolerance for floating point)
+                            var matches = true
+                            for i in 0..<suffixLength {
+                                if abs(suffix[i] - prefix[i]) > 0.0001 {
+                                    matches = false
+                                    break
+                                }
+                            }
+                            
+                            if matches {
+                                bestMatchLength = suffixLength
+                            } else {
+                                // Once we find a mismatch, no longer suffix will match
+                                break
+                            }
+                        }
+                        
+                        if bestMatchLength > 0 && bestMatchLength < samplesToProcess.count {
+                            // Extract new samples (everything after the overlap)
+                            newSamples = Array(samplesToProcess[bestMatchLength...])
+                        } else {
+                            // No clear overlap found - use all samples (fallback)
+                            newSamples = samplesToProcess
+                        }
+                    }
+                    
+                    // Store each new sample as a separate frame (earliest first)
+                    // This way, new samples push old frames left
+                    for sample in newSamples {
+                        // Each frame contains a single sample value
+                        scrollingBuffer[scrollingBufferWriteIndex] = [sample]
+                        
+                        // Update write index (wrap around)
+                        scrollingBufferWriteIndex = (scrollingBufferWriteIndex + 1) % maxScrollingFrames
+                        
+                        // Update count (don't exceed max)
+                        if scrollingBufferCount < maxScrollingFrames {
+                            scrollingBufferCount += 1
+                        }
+                    }
+                    
+                    // Update last seen samples (keep tail for next comparison)
+                    lastSeenOscilloscopeSamples = samplesToProcess
+                    let tailSize = min(overlapWindowSize, samplesToProcess.count)
+                    if lastSeenOscilloscopeSamples.count > tailSize {
+                        lastSeenOscilloscopeSamples = Array(lastSeenOscilloscopeSamples.suffix(tailSize))
+                    }
+                    
+                    // Update timestamp
+                    lastScrollingUpdateTime = now
+                }
+                
             default:
                 // Frequency-domain presets: use displayMagnitudes
-                currentFrame = displayMagnitudes.isEmpty ? fftMagnitudes : displayMagnitudes
-            }
-            
-            if !currentFrame.isEmpty {
-                // Initialize buffer to fixed size if needed
-                // Pre-allocate to avoid reallocation during runtime
-                if scrollingBuffer.count < maxScrollingFrames {
-                    scrollingBuffer.reserveCapacity(maxScrollingFrames)
-                    while scrollingBuffer.count < maxScrollingFrames {
-                        scrollingBuffer.append([])
+                let currentFrame = displayMagnitudes.isEmpty ? fftMagnitudes : displayMagnitudes
+                
+                if !currentFrame.isEmpty {
+                    // Initialize buffer to fixed size if needed
+                    // Pre-allocate to avoid reallocation during runtime
+                    if scrollingBuffer.count < maxScrollingFrames {
+                        scrollingBuffer.reserveCapacity(maxScrollingFrames)
+                        while scrollingBuffer.count < maxScrollingFrames {
+                            scrollingBuffer.append([])
+                        }
                     }
+                    
+                    // Write to circular buffer (reuse existing slot, no allocation)
+                    // This overwrites the array reference, reusing the slot
+                    scrollingBuffer[scrollingBufferWriteIndex] = currentFrame
+                    
+                    // Update write index (wrap around)
+                    scrollingBufferWriteIndex = (scrollingBufferWriteIndex + 1) % maxScrollingFrames
+                    
+                    // Update count (don't exceed max)
+                    if scrollingBufferCount < maxScrollingFrames {
+                        scrollingBufferCount += 1
+                    }
+                    
+                    // Update timestamp
+                    lastScrollingUpdateTime = now
                 }
-                
-                // Write to circular buffer (reuse existing slot, no allocation)
-                // This overwrites the array reference, reusing the slot
-                scrollingBuffer[scrollingBufferWriteIndex] = currentFrame
-                
-                // Update write index (wrap around)
-                scrollingBufferWriteIndex = (scrollingBufferWriteIndex + 1) % maxScrollingFrames
-                
-                // Update count (don't exceed max)
-                if scrollingBufferCount < maxScrollingFrames {
-                    scrollingBufferCount += 1
-                }
-                
-                // Update timestamp
-                lastScrollingUpdateTime = now
             }
         }
         
@@ -258,6 +340,7 @@ public struct AudioVisualizerFeature: Reducer {
             scrollingBufferWriteIndex = 0
             scrollingBufferCount = 0
             lastScrollingUpdateTime = nil
+            lastSeenOscilloscopeSamples = []
         }
         
         /// Resize the scrolling buffer to a new maximum frame limit
