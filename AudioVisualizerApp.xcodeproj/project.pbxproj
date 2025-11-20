@@ -7,15 +7,21 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		58A23E9C726548220D800346 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 60CD58E663126BDF60DCE129 /* README.md */; };
 		D54DC3F9B2E26F0B89A70DB5 /* AudioVisualizer in Frameworks */ = {isa = PBXBuildFile; productRef = 71251D1EA61B2B14080CFE96 /* AudioVisualizer */; };
 		E65030867CE9273A3D807512 /* AudioVisualizerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87213CDD6C7202959563873F /* AudioVisualizerApp.swift */; };
+		E8B0E1B95BB0EC7C989B6333 /* ScreenTestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36F74CDA60039FAFCF993679 /* ScreenTestApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		023B14D7C03F557E6D40AEAC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2A4BAA5335731393A96BEB76 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		36F74CDA60039FAFCF993679 /* ScreenTestApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenTestApp.swift; sourceTree = "<group>"; };
+		60CD58E663126BDF60DCE129 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		87213CDD6C7202959563873F /* AudioVisualizerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioVisualizerApp.swift; sourceTree = "<group>"; };
 		A27486E1201610E2C8426B12 /* hviz_v1demo */ = {isa = PBXFileReference; lastKnownFileType = folder; name = hviz_v1demo; path = .; sourceTree = SOURCE_ROOT; };
 		C276E3C8486EC0384C290ACC /* AudioVisualizerApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AudioVisualizerApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EB08917D57481CBABCE859AF /* ScreenTestApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScreenTestApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -35,6 +41,7 @@
 			children = (
 				891499411E9B8416DD9C222A /* AudioVisualizerApp */,
 				763110CFEF1BFAF5A4FE3B19 /* Packages */,
+				D1A852523E2F28E2D8AA9480 /* ScreenTestApp */,
 				3D7BD11953EC96001AB119DA /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +50,7 @@
 			isa = PBXGroup;
 			children = (
 				C276E3C8486EC0384C290ACC /* AudioVisualizerApp.app */,
+				EB08917D57481CBABCE859AF /* ScreenTestApp.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -62,6 +70,16 @@
 				023B14D7C03F557E6D40AEAC /* Info.plist */,
 			);
 			path = AudioVisualizerApp;
+			sourceTree = "<group>";
+		};
+		D1A852523E2F28E2D8AA9480 /* ScreenTestApp */ = {
+			isa = PBXGroup;
+			children = (
+				2A4BAA5335731393A96BEB76 /* Info.plist */,
+				60CD58E663126BDF60DCE129 /* README.md */,
+				36F74CDA60039FAFCF993679 /* ScreenTestApp.swift */,
+			);
+			path = ScreenTestApp;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -84,6 +102,24 @@
 			);
 			productName = AudioVisualizerApp;
 			productReference = C276E3C8486EC0384C290ACC /* AudioVisualizerApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F98D9BA23007E31905969279 /* ScreenTestApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D095CA8CA5B7FD5F074BB599 /* Build configuration list for PBXNativeTarget "ScreenTestApp" */;
+			buildPhases = (
+				F3B05192AC287E7BBDD107E8 /* Sources */,
+				1822F9ACFBA76F0216DEC6DB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ScreenTestApp;
+			packageProductDependencies = (
+			);
+			productName = ScreenTestApp;
+			productReference = EB08917D57481CBABCE859AF /* ScreenTestApp.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -113,9 +149,21 @@
 			projectRoot = "";
 			targets = (
 				981CD0F186FD30209EDE015B /* AudioVisualizerApp */,
+				F98D9BA23007E31905969279 /* ScreenTestApp */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1822F9ACFBA76F0216DEC6DB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				58A23E9C726548220D800346 /* README.md in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		9FBAB4AC59222EBDBA2B5731 /* Sources */ = {
@@ -123,6 +171,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				E65030867CE9273A3D807512 /* AudioVisualizerApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F3B05192AC287E7BBDD107E8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E8B0E1B95BB0EC7C989B6333 /* ScreenTestApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -134,7 +190,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				DEVELOPMENT_TEAM = AX3JYKN2UL;
 				INFOPLIST_FILE = AudioVisualizerApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -207,6 +263,26 @@
 			};
 			name = Release;
 		};
+		7F897915D18AFD465D2AB56B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = AX3JYKN2UL;
+				INFOPLIST_FILE = ScreenTestApp/Info.plist;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.audiovisualizer.screentest;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		BA704021EEF094BCF803ECB0 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -270,12 +346,32 @@
 			};
 			name = Debug;
 		};
+		D2B032C2DE9268129BAE29F2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = AX3JYKN2UL;
+				INFOPLIST_FILE = ScreenTestApp/Info.plist;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.audiovisualizer.screentest;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		FEE29EF6CEBC91BD06E90448 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				DEVELOPMENT_TEAM = AX3JYKN2UL;
 				INFOPLIST_FILE = AudioVisualizerApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -313,6 +409,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		D095CA8CA5B7FD5F074BB599 /* Build configuration list for PBXNativeTarget "ScreenTestApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D2B032C2DE9268129BAE29F2 /* Debug */,
+				7F897915D18AFD465D2AB56B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -336,7 +441,6 @@
 /* Begin XCSwiftPackageProductDependency section */
 		71251D1EA61B2B14080CFE96 /* AudioVisualizer */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 182862B98CA59C99D3F2CC2B /* XCLocalSwiftPackageReference "." */;
 			productName = AudioVisualizer;
 		};
 /* End XCSwiftPackageProductDependency section */

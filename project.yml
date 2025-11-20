@@ -37,6 +37,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSMicrophoneUsageDescription: "This app needs access to your microphone to visualize live audio waveforms."
         MTLCaptureEnabled: true
+        UILaunchScreen: {}
     dependencies:
       - package: AudioVisualizer
         product: AudioVisualizer
@@ -48,4 +49,35 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2" # iPhone and iPad
         SUPPORTS_MACCATALYST: YES
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+
+  ScreenTestApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ScreenTestApp
+    info:
+      path: ScreenTestApp/Info.plist
+      properties:
+        CFBundleDisplayName: Screen Test
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.audiovisualizer.screentest
+        SWIFT_VERSION: "5.9"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1,2" # iPhone and iPad
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
 

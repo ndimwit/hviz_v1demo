@@ -22,6 +22,7 @@ struct AudioVisualizerApp: App {
         .defaultSize(width: 1024, height: 768)
         #endif
     }
+}
     
 #if targetEnvironment(macCatalyst)
 /// View that sets window size on Mac Catalyst
@@ -69,5 +70,4 @@ private struct WindowSizeSetter: UIViewRepresentable {
     }
 }
 #endif
-}
 

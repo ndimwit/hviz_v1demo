@@ -339,7 +339,6 @@ public struct AudioVisualizerView: View {
                 }
             }
         }
-        .ignoresSafeArea(.all, edges: .all)
     }
 }
 
