@@ -504,6 +504,9 @@ public struct AudioVisualizerFeature: Reducer {
         /// FFT window size selection changed
         case fftWindowSizeSelected(Int)
         
+        /// FFT band quantity selection changed
+        case fftBandQuantitySelected(Int)
+        
         /// Include Nyquist band toggle changed
         case includeNyquistBandToggled(Bool)
     }
@@ -693,6 +696,44 @@ public struct AudioVisualizerFeature: Reducer {
                     return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = newWindowSize, fftBandQuantity = appropriateBandQuantity] send in
                         do {
                             // Stop and restart with new FFT window size and appropriate band quantity
+                            await audioMonitor.stopMonitoring()
+                            try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
+                            await send(.monitoringStarted)
+                            
+                            // Start observing magnitude updates
+                            await observeMagnitudes(audioMonitor: audioMonitor, send: send)
+                        } catch {
+                            await send(.errorOccurred(error.localizedDescription))
+                        }
+                    }
+                }
+                
+                return .none
+                
+            case let .fftBandQuantitySelected(newBandQuantity):
+                // Only change if different
+                guard newBandQuantity != state.fftBandQuantity else {
+                    return .none
+                }
+                
+                let wasMonitoring = state.isMonitoring
+                state.fftBandQuantity = newBandQuantity
+                
+                // Clear magnitude buffers and interpolation state to prevent mirroring from stale data
+                // This ensures a clean transition when band quantity changes
+                state.fftMagnitudes = []
+                state.displayMagnitudes = []
+                state.updateDisplayMagnitudes() // This will reset interpolation state
+                state.clearScrollingBuffer()
+                
+                // If monitoring, restart with new FFT band quantity
+                if wasMonitoring {
+                    // Set monitoring to false temporarily to reflect the stop
+                    state.isMonitoring = false
+                    
+                    return .run { [audioMonitor, bufferSize = state.bufferSize, fftWindowSize = state.fftWindowSize, fftBandQuantity = newBandQuantity] send in
+                        do {
+                            // Stop and restart with new FFT band quantity
                             await audioMonitor.stopMonitoring()
                             try await audioMonitor.startMonitoring(bufferSize: bufferSize, fftWindowSize: fftWindowSize, fftBandQuantity: fftBandQuantity)
                             await send(.monitoringStarted)

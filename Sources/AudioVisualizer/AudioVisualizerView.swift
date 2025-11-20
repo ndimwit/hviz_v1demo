@@ -152,6 +152,25 @@ public struct AudioVisualizerView: View {
                             .frame(maxWidth: isRegularWidth ? 100 : 80)
                         }
                         
+                        // FFT band quantity selector
+                        HStack(spacing: 4) {
+                            Text("Bands:")
+                                .font(isRegularWidth ? .body : .caption)
+                                .foregroundColor(.secondary)
+                            
+                            Picker("FFT Bands", selection: Binding(
+                                get: { viewStore.fftBandQuantity },
+                                set: { viewStore.send(.fftBandQuantitySelected($0)) }
+                            )) {
+                                ForEach(Constants.availableFFTBandQuantities, id: \.self) { quantity in
+                                    Text("\(quantity)")
+                                        .tag(quantity)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: isRegularWidth ? 100 : 80)
+                        }
+                        
                         // Include Nyquist band toggle
                         HStack(spacing: 4) {
                             Toggle("+1", isOn: Binding(
