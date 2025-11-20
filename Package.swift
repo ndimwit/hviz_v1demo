@@ -29,7 +29,8 @@ let package = Package(
                 ),
             ],
             resources: [
-                .process("Shaders/HLSLVisualizerShader.hlsl")
+                .process("Shaders/HLSLVisualizerShader.hlsl"),
+                .process("Shaders/Source")  // Include all .msl files for runtime loading
             ]
         ),
         .testTarget(

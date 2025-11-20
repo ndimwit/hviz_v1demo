@@ -135,22 +135,8 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
             }
             self.commandQueue = commandQueue
             
-            // Load shader library - try default library first
-            var library: MTLLibrary?
-            library = device.makeDefaultLibrary()
-            
-            // Check if default library has our functions, if not use embedded source
-            if let defaultLib = library {
-                if defaultLib.makeFunction(name: "waveformVertex") == nil ||
-                   defaultLib.makeFunction(name: "waveformFragment") == nil {
-                    // Functions not found in default library, use embedded source
-                    library = nil
-                }
-            }
-            
-            // If default library fails or doesn't have our functions, try compiling from embedded source
-            if library == nil {
-                let shaderSource = """
+            // Embedded shader source as fallback
+            let embeddedSource = """
                 #include <metal_stdlib>
                 using namespace metal;
                 
@@ -241,13 +227,13 @@ private struct MSLWaveformMetalView: UIViewRepresentable {
                 }
                 """
                 
-                do {
-                    library = try device.makeLibrary(source: shaderSource, options: nil)
-                    print("✓ MSL Waveform Metal library compiled from embedded source")
-                } catch {
-                    print("ERROR: Failed to compile Metal library from embedded source: \(error)")
-                }
-            }
+            // Try loading from file first, then fall back to embedded source
+            library = ShaderManager.shared.loadShaderWithFallback(
+                name: "MSLWaveform",
+                device: device,
+                defaultLibrary: device.makeDefaultLibrary(),
+                embeddedSource: embeddedSource
+            )
             
             guard let finalLibrary = library else {
                 print("ERROR: Failed to create Metal library for waveform shader")

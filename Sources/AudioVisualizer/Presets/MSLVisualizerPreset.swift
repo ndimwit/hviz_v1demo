@@ -189,8 +189,8 @@ private struct MSLMetalView: UIViewRepresentable {
             }
             self.commandQueue = commandQueue
             
-            // Create shader library with blur/echo shaders
-            let shaderSource = """
+            // Embedded shader source as fallback
+            let embeddedSource = """
             #include <metal_stdlib>
             using namespace metal;
             
@@ -352,13 +352,21 @@ private struct MSLMetalView: UIViewRepresentable {
             }
             """
             
-            do {
-                library = try device.makeLibrary(source: shaderSource, options: nil)
-                print("✓ MSL Blur Echo Metal library compiled successfully")
-            } catch {
-                print("ERROR: Failed to compile Metal library: \(error)")
+            // Try loading from file first, then fall back to embedded source
+            library = ShaderManager.shared.loadShaderWithFallback(
+                name: "MSLVisualizer",
+                device: device,
+                defaultLibrary: device.makeDefaultLibrary(),
+                embeddedSource: embeddedSource
+            )
+            
+            guard library != nil else {
+                print("ERROR: Failed to create Metal library")
+                print("  - Device: \(device.name)")
                 return
             }
+            
+            print("✓ MSL Blur Echo Metal library loaded successfully")
             
             // Create histogram render pipeline (renders bars to texture)
             if let vertexFunc = library.makeFunction(name: "barVertex"),
