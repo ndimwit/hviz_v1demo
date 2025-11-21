@@ -42,6 +42,7 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
     case mslWaveform = "msl_waveform"
     case cameraEdgeWaveform = "camera_edge_waveform"
     case cameraEdgeColor = "camera_edge_color"
+    case mslTemplate = "msl_template"
     
     public var id: String { rawValue }
     
@@ -57,7 +58,7 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
     
     /// MSL shader presets
     public static var mslPresets: [VisualizerPresetType] {
-        [.mslVisualizer, .mslTest, .mslDisplace, .mslWaveform]
+        [.mslVisualizer, .mslTest, .mslDisplace, .mslWaveform, .mslTemplate]
     }
     
     public var displayName: String {
@@ -90,6 +91,8 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
             return "Camera Edge (Waveform)"
         case .cameraEdgeColor:
             return "Camera Edge (Color)"
+        case .mslTemplate:
+            return "MSL Template"
         }
     }
     
@@ -123,6 +126,8 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
             return CameraEdgeWaveformPreset()
         case .cameraEdgeColor:
             return CameraEdgeColorPreset()
+        case .mslTemplate:
+            return MSLTemplatePreset()
         }
     }
 }

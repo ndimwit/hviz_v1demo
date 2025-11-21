@@ -63,6 +63,7 @@ private struct EndlessNumberSelector: View {
 /// Parameter type for the unified control selector
 private enum ControlParameter: String, CaseIterable, Identifiable {
     case preset = "Preset"
+    case code = "Code"
     case buffer = "Buffer"
     case window = "Window"
     case bands = "Bands"
@@ -196,6 +197,8 @@ public struct AudioVisualizerView: View {
             return isCameraEdgePreset(viewStore.selectedPreset)
         case .cameraEdgeColorIntensity:
             return viewStore.selectedPreset == .cameraEdgeColor
+        case .code:
+            return viewStore.selectedPreset == .mslTemplate
         default:
             return true
         }
@@ -206,7 +209,8 @@ public struct AudioVisualizerView: View {
         return preset == .mslDisplace ||
                preset == .mslWaveform ||
                preset == .mslVisualizer ||
-               preset == .mslTest
+               preset == .mslTest ||
+               preset == .mslTemplate
     }
     
     /// Check if the selected preset is a camera edge preset
@@ -256,6 +260,26 @@ public struct AudioVisualizerView: View {
                             // Second dropdown: Show options for the selected parameter
                             Group {
                                 switch selectedParameter {
+                                case .code:
+                                    // Code button for MSL Template preset
+                                    if viewStore.selectedPreset == .mslTemplate {
+                                        Button(action: {
+                                            viewStore.send(.showCodeEditor)
+                                        }) {
+                                            HStack {
+                                                Image(systemName: "doc.text")
+                                                Text("Code")
+                                            }
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                        }
+                                        .buttonStyle(.bordered)
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    
                                 case .preset:
                                     Picker("Visualizer Preset", selection: Binding(
                                         get: { viewStore.selectedPreset },
@@ -646,6 +670,10 @@ public struct AudioVisualizerView: View {
                             selectedParameter == .cameraEdgeColorIntensity) {
                             selectedParameter = .preset
                         }
+                        // If preset changed away from MSL Template and we're on Code, switch to preset
+                        if newValue != .mslTemplate && selectedParameter == .code {
+                            selectedParameter = .preset
+                        }
                     }
                     
                     // Visualizer preset view
@@ -676,6 +704,8 @@ public struct AudioVisualizerView: View {
                         .environment(\.cameraEdgeThreshold, viewStore.cameraEdgeThreshold)
                         .environment(\.cameraEdgeSensitivity, viewStore.cameraEdgeSensitivity)
                         .environment(\.cameraEdgeColorIntensity, viewStore.cameraEdgeColorIntensity)
+                        .environment(\.mslTemplateShaderCode, viewStore.mslTemplateShaderCode)
+                        .environment(\.mslTemplateReloadTrigger, viewStore.mslTemplateReloadTrigger)
                     )
                     
                     Spacer()
@@ -683,6 +713,80 @@ public struct AudioVisualizerView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onAppear {
                     viewStore.send(.onAppear)
+                }
+                .sheet(isPresented: Binding(
+                    get: { viewStore.showCodeEditor },
+                    set: { if !$0 { viewStore.send(.hideCodeEditor) } }
+                )) {
+                    CodeEditorModal(
+                        shaderCode: Binding(
+                            get: { viewStore.mslTemplateShaderCode },
+                            set: { viewStore.send(.shaderCodeUpdated($0)) }
+                        ),
+                        onUpdate: {
+                            viewStore.send(.applyShaderCode)
+                        },
+                        onDismiss: {
+                            viewStore.send(.hideCodeEditor)
+                        },
+                        isRegularWidth: isRegularWidth
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Modal for editing MSL shader code
+private struct CodeEditorModal: View {
+    @Binding var shaderCode: String
+    let onUpdate: () -> Void
+    let onDismiss: () -> Void
+    let isRegularWidth: Bool
+    
+    @State private var localCode: String = ""
+    @FocusState private var isEditorFocused: Bool
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Text editor with 50% opacity background
+                TextEditor(text: $localCode)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(8)
+                    .background(
+                        Color.secondary.opacity(0.5)
+                    )
+                    .focused($isEditorFocused)
+                    .onAppear {
+                        localCode = shaderCode.isEmpty ? MSLTemplatePreset.defaultShaderCode : shaderCode
+                        isEditorFocused = true
+                    }
+                
+                // Update button at bottom
+                Button(action: {
+                    shaderCode = localCode
+                    onUpdate()
+                }) {
+                    Text("Update")
+                        .font(isRegularWidth ? .headline : .body)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, isRegularWidth ? 12 : 10)
+                        .background(Color.accentColor)
+                        .cornerRadius(8)
+                }
+                .padding(.horizontal, isRegularWidth ? 20 : 16)
+                .padding(.vertical, isRegularWidth ? 16 : 12)
+            }
+            .navigationTitle("MSL Shader Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
         }

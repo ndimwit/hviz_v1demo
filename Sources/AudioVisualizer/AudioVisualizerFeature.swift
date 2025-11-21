@@ -127,6 +127,15 @@ public struct AudioVisualizerFeature: Reducer {
         /// Color intensity for Camera Edge Color preset (0.0 to 2.0)
         public var cameraEdgeColorIntensity: Float = 1.0
         
+        /// Shader code for MSL Template preset
+        public var mslTemplateShaderCode: String = ""
+        
+        /// Whether code editor modal is shown
+        public var showCodeEditor: Bool = false
+        
+        /// Reload trigger for MSL Template preset (increment to trigger reload)
+        public var mslTemplateReloadTrigger: Int = 0
+        
         /// Timestamp of last magnitude update (not included in Equatable comparison)
         var lastUpdateTime: Date?
         
@@ -221,6 +230,9 @@ public struct AudioVisualizerFeature: Reducer {
             abs(lhs.cameraEdgeThreshold - rhs.cameraEdgeThreshold) < 0.001 &&
             abs(lhs.cameraEdgeSensitivity - rhs.cameraEdgeSensitivity) < 0.001 &&
             abs(lhs.cameraEdgeColorIntensity - rhs.cameraEdgeColorIntensity) < 0.001 &&
+            lhs.mslTemplateShaderCode == rhs.mslTemplateShaderCode &&
+            lhs.showCodeEditor == rhs.showCodeEditor &&
+            lhs.mslTemplateReloadTrigger == rhs.mslTemplateReloadTrigger &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
         }
         
@@ -759,6 +771,18 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// Camera edge color intensity selection changed
         case cameraEdgeColorIntensitySelected(Float)
+        
+        /// Show code editor modal
+        case showCodeEditor
+        
+        /// Hide code editor modal
+        case hideCodeEditor
+        
+        /// Update shader code in editor
+        case shaderCodeUpdated(String)
+        
+        /// Apply shader code update (compile and reload)
+        case applyShaderCode
     }
     
     // MARK: - Dependencies
@@ -1054,6 +1078,33 @@ public struct AudioVisualizerFeature: Reducer {
                 
             case let .cameraEdgeColorIntensitySelected(newIntensity):
                 state.cameraEdgeColorIntensity = max(0.0, min(2.0, newIntensity)) // Clamp to [0, 2]
+                return .none
+                
+            case .showCodeEditor:
+                // Initialize with default shader code if empty
+                if state.mslTemplateShaderCode.isEmpty {
+                    state.mslTemplateShaderCode = MSLTemplatePreset.defaultShaderCode
+                }
+                state.showCodeEditor = true
+                return .none
+                
+            case .hideCodeEditor:
+                state.showCodeEditor = false
+                return .none
+                
+            case let .shaderCodeUpdated(code):
+                state.mslTemplateShaderCode = code
+                return .none
+                
+            case .applyShaderCode:
+                // Try to compile the shader
+                // The actual compilation happens in the preset's coordinator
+                // We just trigger a reload by incrementing the reload trigger
+                // Note: If compilation fails, the preset coordinator will handle fallback
+                // and we could set an error message here if needed
+                state.mslTemplateReloadTrigger += 1
+                // Close the modal after applying
+                state.showCodeEditor = false
                 return .none
             }
         }
