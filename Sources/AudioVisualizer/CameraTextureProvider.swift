@@ -3,6 +3,9 @@ import AVFoundation
 import Metal
 import MetalKit
 import CoreVideo
+#if os(iOS)
+import UIKit
+#endif
 
 /// Provides camera frames as Metal textures for processing
 class CameraTextureProvider: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -247,6 +250,41 @@ class CameraTextureProvider: NSObject, AVCaptureVideoDataOutputSampleBufferDeleg
             if session.canAddOutput(output) {
                 session.addOutput(output)
                 videoOutput = output
+                
+                // Set video orientation to match interface orientation
+                // This matches the behavior of AVCaptureVideoPreviewLayer
+                if let connection = output.connection(with: .video) {
+                    #if os(iOS)
+                    // On iOS, determine orientation from interface orientation
+                    // AVCaptureVideoPreviewLayer automatically uses interface orientation
+                    if connection.isVideoOrientationSupported {
+                        // Get the current interface orientation
+                        let interfaceOrientation: AVCaptureVideoOrientation
+                        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                            switch windowScene.interfaceOrientation {
+                            case .portrait:
+                                interfaceOrientation = .portrait
+                            case .portraitUpsideDown:
+                                interfaceOrientation = .portraitUpsideDown
+                            case .landscapeLeft:
+                                interfaceOrientation = .landscapeLeft
+                            case .landscapeRight:
+                                interfaceOrientation = .landscapeRight
+                            default:
+                                interfaceOrientation = .portrait
+                            }
+                        } else {
+                            // Fallback to portrait if we can't determine orientation
+                            interfaceOrientation = .portrait
+                        }
+                        connection.videoOrientation = interfaceOrientation
+                        print("📹 Set video orientation to: \(interfaceOrientation.rawValue)")
+                    }
+                    #else
+                    // On macOS, cameras are typically landscape by default
+                    // No rotation needed
+                    #endif
+                }
             } else {
                 print("ERROR: Cannot add video output")
                 session.commitConfiguration()

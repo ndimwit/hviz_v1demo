@@ -220,7 +220,8 @@ private struct CameraEdgeWaveformMetalView: UIViewRepresentable {
                     constant float& opacity [[buffer(5)]],
                     sampler textureSampler [[sampler(0)]]
                 ) {
-                    float edgeMask = edgeTexture.sample(textureSampler, in.uv).r;
+                    float2 rotatedUV = float2(in.uv.x, 1.0 - in.uv.y);
+                    float edgeMask = edgeTexture.sample(textureSampler, rotatedUV).r;
                     if (edgeMask > edgeThreshold) {
                         float2 center = float2(0.5, 0.5);
                         float2 direction = in.uv - center;
@@ -242,10 +243,11 @@ private struct CameraEdgeWaveformMetalView: UIViewRepresentable {
                         float2 displacement = direction * displacementMagnitude;
                         float2 displacedUV = in.uv + displacement;
                         displacedUV = clamp(displacedUV, 0.0, 1.0);
-                        float4 color = cameraTexture.sample(textureSampler, displacedUV);
+                        float2 rotatedDisplacedUV = float2(displacedUV.x, 1.0 - displacedUV.y);
+                        float4 color = cameraTexture.sample(textureSampler, rotatedDisplacedUV);
                         return float4(color.rgb, color.a * opacity);
                     } else {
-                        float4 color = cameraTexture.sample(textureSampler, in.uv);
+                        float4 color = cameraTexture.sample(textureSampler, rotatedUV);
                         return float4(color.rgb, color.a * opacity);
                     }
                 }

@@ -233,7 +233,8 @@ private struct CameraEdgeColorMetalView: UIViewRepresentable {
                     constant float& opacity [[buffer(6)]],
                     sampler textureSampler [[sampler(0)]]
                 ) {
-                    float edgeMask = edgeTexture.sample(textureSampler, in.uv).r;
+                    float2 rotatedUV = float2(in.uv.x, 1.0 - in.uv.y);
+                    float edgeMask = edgeTexture.sample(textureSampler, rotatedUV).r;
                     if (edgeMask > edgeThreshold) {
                         float2 center = float2(0.5, 0.5);
                         float2 direction = in.uv - center;
@@ -255,7 +256,8 @@ private struct CameraEdgeColorMetalView: UIViewRepresentable {
                         float2 displacement = direction * displacementMagnitude;
                         float2 displacedUV = in.uv + displacement;
                         displacedUV = clamp(displacedUV, 0.0, 1.0);
-                        float4 cameraColor = cameraTexture.sample(textureSampler, displacedUV);
+                        float2 rotatedDisplacedUV = float2(displacedUV.x, 1.0 - displacedUV.y);
+                        float4 cameraColor = cameraTexture.sample(textureSampler, rotatedDisplacedUV);
                         float bandPosition = float(binIndex) / float(max(float(magnitudeCount - 1), 1.0));
                         float3 frequencyColor;
                         if (bandPosition < 0.33) {
@@ -271,7 +273,7 @@ private struct CameraEdgeColorMetalView: UIViewRepresentable {
                         float3 finalColor = mix(cameraColor.rgb, frequencyColor * colorIntensity, normalizedMag * 0.5);
                         return float4(finalColor, cameraColor.a * opacity);
                     } else {
-                        float4 color = cameraTexture.sample(textureSampler, in.uv);
+                        float4 color = cameraTexture.sample(textureSampler, rotatedUV);
                         return float4(color.rgb, color.a * opacity);
                     }
                 }

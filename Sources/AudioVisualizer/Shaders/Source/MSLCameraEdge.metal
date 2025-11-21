@@ -107,8 +107,12 @@ fragment float4 cameraEdgeWaveformFragment(
     constant float& opacity [[buffer(5)]],
     sampler textureSampler [[sampler(0)]]
 ) {
+    // Flip UV coordinates vertically to fix upside-down camera (without horizontal flip)
+    // Vertical flip: newU = oldU, newV = 1.0 - oldV
+    float2 rotatedUV = float2(in.uv.x, 1.0 - in.uv.y);
+    
     // Sample edge mask
-    float edgeMask = edgeTexture.sample(textureSampler, in.uv).r;
+    float edgeMask = edgeTexture.sample(textureSampler, rotatedUV).r;
     
     // Check if this is an edge pixel
     if (edgeMask > edgeThreshold) {
@@ -148,13 +152,16 @@ fragment float4 cameraEdgeWaveformFragment(
         // Clamp to valid range
         displacedUV = clamp(displacedUV, 0.0, 1.0);
         
-        // Sample camera texture at displaced position
-        float4 color = cameraTexture.sample(textureSampler, displacedUV);
+        // Flip displaced UV vertically to fix upside-down camera (without horizontal flip)
+        float2 rotatedDisplacedUV = float2(displacedUV.x, 1.0 - displacedUV.y);
+        
+        // Sample camera texture at rotated displaced position
+        float4 color = cameraTexture.sample(textureSampler, rotatedDisplacedUV);
         
         return float4(color.rgb, color.a * opacity);
     } else {
-        // Not an edge pixel, sample camera texture normally
-        float4 color = cameraTexture.sample(textureSampler, in.uv);
+        // Not an edge pixel, sample camera texture normally with rotation
+        float4 color = cameraTexture.sample(textureSampler, rotatedUV);
         return float4(color.rgb, color.a * opacity);
     }
 }
@@ -173,8 +180,12 @@ fragment float4 cameraEdgeColorFragment(
     constant float& opacity [[buffer(6)]],
     sampler textureSampler [[sampler(0)]]
 ) {
+    // Flip UV coordinates vertically to fix upside-down camera (without horizontal flip)
+    // Vertical flip: newU = oldU, newV = 1.0 - oldV
+    float2 rotatedUV = float2(in.uv.x, 1.0 - in.uv.y);
+    
     // Sample edge mask
-    float edgeMask = edgeTexture.sample(textureSampler, in.uv).r;
+    float edgeMask = edgeTexture.sample(textureSampler, rotatedUV).r;
     
     // Check if this is an edge pixel
     if (edgeMask > edgeThreshold) {
@@ -214,8 +225,11 @@ fragment float4 cameraEdgeColorFragment(
         // Clamp to valid range
         displacedUV = clamp(displacedUV, 0.0, 1.0);
         
-        // Sample camera texture at displaced position
-        float4 cameraColor = cameraTexture.sample(textureSampler, displacedUV);
+        // Flip displaced UV vertically to fix upside-down camera (without horizontal flip)
+        float2 rotatedDisplacedUV = float2(displacedUV.x, 1.0 - displacedUV.y);
+        
+        // Sample camera texture at rotated displaced position
+        float4 cameraColor = cameraTexture.sample(textureSampler, rotatedDisplacedUV);
         
         // Map frequency bin to color based on band ranges
         float bandPosition = float(binIndex) / float(max(float(magnitudeCount - 1), 1.0)); // [0, 1]
@@ -240,8 +254,8 @@ fragment float4 cameraEdgeColorFragment(
         
         return float4(finalColor, cameraColor.a * opacity);
     } else {
-        // Not an edge pixel, sample camera texture normally
-        float4 color = cameraTexture.sample(textureSampler, in.uv);
+        // Not an edge pixel, sample camera texture normally with rotation
+        float4 color = cameraTexture.sample(textureSampler, rotatedUV);
         return float4(color.rgb, color.a * opacity);
     }
 }
