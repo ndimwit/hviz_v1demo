@@ -40,12 +40,14 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
     case mslTest = "msl_test"
     case mslDisplace = "msl_displace"
     case mslWaveform = "msl_waveform"
+    case cameraEdgeWaveform = "camera_edge_waveform"
+    case cameraEdgeColor = "camera_edge_color"
     
     public var id: String { rawValue }
     
     /// Default presets (non-shader based)
     public static var defaultPresets: [VisualizerPresetType] {
-        [.lineChart, .histogramBands, .oscilloscope, .stereoField, .quadrant, .cameraVisualizer]
+        [.lineChart, .histogramBands, .oscilloscope, .stereoField, .quadrant, .cameraVisualizer, .cameraEdgeWaveform, .cameraEdgeColor]
     }
     
     /// HLSL shader presets
@@ -84,6 +86,10 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
             return "MSL Displace"
         case .mslWaveform:
             return "MSL Waveform"
+        case .cameraEdgeWaveform:
+            return "Camera Edge (Waveform)"
+        case .cameraEdgeColor:
+            return "Camera Edge (Color)"
         }
     }
     
@@ -113,6 +119,10 @@ public enum VisualizerPresetType: String, CaseIterable, Identifiable {
             return MSLDisplacePreset()
         case .mslWaveform:
             return MSLWaveformPreset()
+        case .cameraEdgeWaveform:
+            return CameraEdgeWaveformPreset()
+        case .cameraEdgeColor:
+            return CameraEdgeColorPreset()
         }
     }
 }

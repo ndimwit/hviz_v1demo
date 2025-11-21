@@ -115,6 +115,18 @@ public struct AudioVisualizerFeature: Reducer {
         /// Color transform intensity for HLSL/MSL Blur Echo presets (0.0 to 1.0)
         public var colorTransformIntensity: Float = 0.3
         
+        /// Displacement scale for Camera Edge presets (0.0 to 1.0)
+        public var cameraEdgeDisplacementScale: Float = 0.2
+        
+        /// Edge detection threshold for Camera Edge presets (0.0 to 1.0)
+        public var cameraEdgeThreshold: Float = 0.1
+        
+        /// Edge detection sensitivity for Camera Edge presets (0.0 to 2.0)
+        public var cameraEdgeSensitivity: Float = 1.0
+        
+        /// Color intensity for Camera Edge Color preset (0.0 to 2.0)
+        public var cameraEdgeColorIntensity: Float = 1.0
+        
         /// Timestamp of last magnitude update (not included in Equatable comparison)
         var lastUpdateTime: Date?
         
@@ -205,6 +217,10 @@ public struct AudioVisualizerFeature: Reducer {
             abs(lhs.blurIntensity - rhs.blurIntensity) < 0.001 &&
             abs(lhs.echoIntensity - rhs.echoIntensity) < 0.001 &&
             abs(lhs.colorTransformIntensity - rhs.colorTransformIntensity) < 0.001 &&
+            abs(lhs.cameraEdgeDisplacementScale - rhs.cameraEdgeDisplacementScale) < 0.001 &&
+            abs(lhs.cameraEdgeThreshold - rhs.cameraEdgeThreshold) < 0.001 &&
+            abs(lhs.cameraEdgeSensitivity - rhs.cameraEdgeSensitivity) < 0.001 &&
+            abs(lhs.cameraEdgeColorIntensity - rhs.cameraEdgeColorIntensity) < 0.001 &&
             abs(lhs.frameRate - rhs.frameRate) < 0.1 // Consider equal if within 0.1 FPS
         }
         
@@ -731,6 +747,18 @@ public struct AudioVisualizerFeature: Reducer {
         
         /// Color transform intensity selection changed
         case colorTransformIntensitySelected(Float)
+        
+        /// Camera edge displacement scale selection changed
+        case cameraEdgeDisplacementScaleSelected(Float)
+        
+        /// Camera edge threshold selection changed
+        case cameraEdgeThresholdSelected(Float)
+        
+        /// Camera edge sensitivity selection changed
+        case cameraEdgeSensitivitySelected(Float)
+        
+        /// Camera edge color intensity selection changed
+        case cameraEdgeColorIntensitySelected(Float)
     }
     
     // MARK: - Dependencies
@@ -1010,6 +1038,22 @@ public struct AudioVisualizerFeature: Reducer {
                 
             case let .colorTransformIntensitySelected(newIntensity):
                 state.colorTransformIntensity = max(0.0, min(1.0, newIntensity)) // Clamp to [0, 1]
+                return .none
+                
+            case let .cameraEdgeDisplacementScaleSelected(newScale):
+                state.cameraEdgeDisplacementScale = max(0.0, min(1.0, newScale)) // Clamp to [0, 1]
+                return .none
+                
+            case let .cameraEdgeThresholdSelected(newThreshold):
+                state.cameraEdgeThreshold = max(0.0, min(1.0, newThreshold)) // Clamp to [0, 1]
+                return .none
+                
+            case let .cameraEdgeSensitivitySelected(newSensitivity):
+                state.cameraEdgeSensitivity = max(0.0, min(2.0, newSensitivity)) // Clamp to [0, 2]
+                return .none
+                
+            case let .cameraEdgeColorIntensitySelected(newIntensity):
+                state.cameraEdgeColorIntensity = max(0.0, min(2.0, newIntensity)) // Clamp to [0, 2]
                 return .none
             }
         }

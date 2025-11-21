@@ -74,6 +74,10 @@ private enum ControlParameter: String, CaseIterable, Identifiable {
     case blurIntensity = "Blur Intensity"
     case echoIntensity = "Echo Intensity"
     case colorTransformIntensity = "Color Transform"
+    case cameraEdgeDisplacementScale = "Edge Displace Scale"
+    case cameraEdgeThreshold = "Edge Threshold"
+    case cameraEdgeSensitivity = "Edge Sensitivity"
+    case cameraEdgeColorIntensity = "Edge Color Intensity"
     
     var id: String { rawValue }
     
@@ -164,9 +168,13 @@ public struct AudioVisualizerView: View {
             case .displaceScale:
                 return viewStore.selectedPreset == .mslDisplace
             case .opacity:
-                return isMSLShaderPreset(viewStore.selectedPreset)
+                return isMSLShaderPreset(viewStore.selectedPreset) || isCameraEdgePreset(viewStore.selectedPreset)
             case .blurIntensity, .echoIntensity, .colorTransformIntensity:
                 return isBlurEchoPreset(viewStore.selectedPreset)
+            case .cameraEdgeDisplacementScale, .cameraEdgeThreshold, .cameraEdgeSensitivity:
+                return isCameraEdgePreset(viewStore.selectedPreset)
+            case .cameraEdgeColorIntensity:
+                return viewStore.selectedPreset == .cameraEdgeColor
             default:
                 return true
             }
@@ -181,9 +189,13 @@ public struct AudioVisualizerView: View {
         case .displaceScale:
             return viewStore.selectedPreset == .mslDisplace
         case .opacity:
-            return isMSLShaderPreset(viewStore.selectedPreset)
+            return isMSLShaderPreset(viewStore.selectedPreset) || isCameraEdgePreset(viewStore.selectedPreset)
         case .blurIntensity, .echoIntensity, .colorTransformIntensity:
             return isBlurEchoPreset(viewStore.selectedPreset)
+        case .cameraEdgeDisplacementScale, .cameraEdgeThreshold, .cameraEdgeSensitivity:
+            return isCameraEdgePreset(viewStore.selectedPreset)
+        case .cameraEdgeColorIntensity:
+            return viewStore.selectedPreset == .cameraEdgeColor
         default:
             return true
         }
@@ -195,6 +207,11 @@ public struct AudioVisualizerView: View {
                preset == .mslWaveform ||
                preset == .mslVisualizer ||
                preset == .mslTest
+    }
+    
+    /// Check if the selected preset is a camera edge preset
+    private func isCameraEdgePreset(_ preset: VisualizerPresetType) -> Bool {
+        return preset == .cameraEdgeWaveform || preset == .cameraEdgeColor
     }
     
     /// Check if the selected preset is a blur/echo preset
@@ -475,6 +492,82 @@ public struct AudioVisualizerView: View {
                                             .foregroundColor(.secondary)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
+                                
+                                case .cameraEdgeDisplacementScale:
+                                    if isCameraEdgePreset(viewStore.selectedPreset) {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.cameraEdgeDisplacementScale) },
+                                                set: { viewStore.send(.cameraEdgeDisplacementScaleSelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 1.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                
+                                case .cameraEdgeThreshold:
+                                    if isCameraEdgePreset(viewStore.selectedPreset) {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.cameraEdgeThreshold) },
+                                                set: { viewStore.send(.cameraEdgeThresholdSelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 1.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                
+                                case .cameraEdgeSensitivity:
+                                    if isCameraEdgePreset(viewStore.selectedPreset) {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.cameraEdgeSensitivity) },
+                                                set: { viewStore.send(.cameraEdgeSensitivitySelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 2.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                
+                                case .cameraEdgeColorIntensity:
+                                    if viewStore.selectedPreset == .cameraEdgeColor {
+                                        EndlessNumberSelector(
+                                            value: Binding(
+                                                get: { Double(viewStore.cameraEdgeColorIntensity) },
+                                                set: { viewStore.send(.cameraEdgeColorIntensitySelected(Float($0))) }
+                                            ),
+                                            min: 0.0,
+                                            max: 2.0,
+                                            step: 0.01,
+                                            format: { String(format: "%.2f", $0) }
+                                        )
+                                    } else {
+                                        Text("N/A")
+                                            .font(isRegularWidth ? .callout : .caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -540,8 +633,17 @@ public struct AudioVisualizerView: View {
                         }
                         // If preset changed away from MSL shader presets and we're on opacity, switch to preset
                         if !(newValue == .mslDisplace || newValue == .mslWaveform || 
-                             newValue == .mslVisualizer || newValue == .mslTest) && 
+                             newValue == .mslVisualizer || newValue == .mslTest ||
+                             newValue == .cameraEdgeWaveform || newValue == .cameraEdgeColor) && 
                            selectedParameter == .opacity {
+                            selectedParameter = .preset
+                        }
+                        // If preset changed away from camera edge presets and we're on camera edge controls, switch to preset
+                        if !isCameraEdgePreset(newValue) &&
+                           (selectedParameter == .cameraEdgeDisplacementScale ||
+                            selectedParameter == .cameraEdgeThreshold ||
+                            selectedParameter == .cameraEdgeSensitivity ||
+                            selectedParameter == .cameraEdgeColorIntensity) {
                             selectedParameter = .preset
                         }
                     }
@@ -570,6 +672,10 @@ public struct AudioVisualizerView: View {
                         .environment(\.blurIntensity, viewStore.blurIntensity)
                         .environment(\.echoIntensity, viewStore.echoIntensity)
                         .environment(\.colorTransformIntensity, viewStore.colorTransformIntensity)
+                        .environment(\.cameraEdgeDisplacementScale, viewStore.cameraEdgeDisplacementScale)
+                        .environment(\.cameraEdgeThreshold, viewStore.cameraEdgeThreshold)
+                        .environment(\.cameraEdgeSensitivity, viewStore.cameraEdgeSensitivity)
+                        .environment(\.cameraEdgeColorIntensity, viewStore.cameraEdgeColorIntensity)
                     )
                     
                     Spacer()
